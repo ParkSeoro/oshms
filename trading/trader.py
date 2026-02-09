@@ -1,6 +1,7 @@
 """자동 매매 엔진.
 
 전략 분석 → 리스크 관리 → 주문 실행의 전체 사이클을 관리한다.
+Expert 모드에서는 시장 컨텍스트와 멀티 타임프레임 분석을 추가한다.
 """
 
 import time
@@ -9,6 +10,8 @@ from datetime import datetime
 from api.kis_api import KISApi
 from config.settings import Settings
 from strategy.base import BaseStrategy, SignalType
+from strategy.expert import ExpertStrategy
+from strategy.market_context import MarketContextAnalyzer, MarketContext
 from trading.order_manager import OrderManager
 from utils.logger import setup_logger
 
@@ -26,6 +29,15 @@ class AutoTrader:
         self._running = False
         self._cycle_count = 0
 
+        # Expert 모드 시장 분석기
+        self._market_analyzer: MarketContextAnalyzer | None = None
+        self._market_ctx: MarketContext | None = None
+        self._market_ctx_updated: float = 0
+
+        if isinstance(strategy, ExpertStrategy):
+            self._market_analyzer = MarketContextAnalyzer(api)
+            strategy.market_analyzer = self._market_analyzer
+
     def is_trading_time(self) -> bool:
         """현재 시간이 매매 가능 시간인지 확인한다."""
         now = datetime.now().strftime("%H:%M")
@@ -39,15 +51,20 @@ class AutoTrader:
             interval: 매매 사이클 간격 (초)
         """
         self._running = True
-        logger.info("=" * 60)
-        logger.info("자동 매매 시작")
-        logger.info("전략: %s", self.strategy.name)
+        is_expert = isinstance(self.strategy, ExpertStrategy)
+
+        logger.info("=" * 70)
+        logger.info("  OSHMS 자동 매매 시스템 가동")
+        logger.info("=" * 70)
+        logger.info("전략: %s%s", self.strategy.name, " (전문가 모드)" if is_expert else "")
         logger.info("매매 시간: %s ~ %s", self.settings.trading_start_time, self.settings.trading_end_time)
         logger.info("최대 매수금액: %s원", f"{self.settings.max_buy_amount:,}")
         logger.info("최대 보유종목: %d개", self.settings.max_hold_count)
         logger.info("손절: %.1f%% / 익절: %.1f%%", self.settings.stop_loss_pct, self.settings.take_profit_pct)
         logger.info("감시 주기: %d초", interval)
-        logger.info("=" * 60)
+        if is_expert:
+            logger.info("분석 모듈: 기술적분석 + 캔들패턴 + 뉴스감성 + 시장레짐")
+        logger.info("=" * 70)
 
         # 잔고 동기화
         self.order_manager.sync_positions()
@@ -59,6 +76,10 @@ class AutoTrader:
                     logger.info("[%s] 매매 시간 외 - 대기 중...", now)
                     time.sleep(60)
                     continue
+
+                # Expert 모드: 시장 컨텍스트 갱신 (60초마다)
+                if is_expert:
+                    self._update_market_context()
 
                 stocks = target_stocks or self._select_stocks()
                 self._run_cycle(stocks)
@@ -75,6 +96,30 @@ class AutoTrader:
         """자동 매매를 중지한다."""
         self._running = False
         logger.info("자동 매매 중지 (총 %d 사이클)", self._cycle_count)
+
+    def _update_market_context(self) -> None:
+        """시장 컨텍스트를 갱신한다."""
+        now = time.time()
+        if now - self._market_ctx_updated < 60:
+            return
+
+        try:
+            if self._market_analyzer:
+                self._market_ctx = self._market_analyzer.analyze()
+                if isinstance(self.strategy, ExpertStrategy):
+                    self.strategy.set_market_context(self._market_ctx)
+                self._market_ctx_updated = now
+
+                # 시장 상황에 따른 동적 리스크 조정
+                if self._market_ctx:
+                    adj = self._market_analyzer.get_regime_strategy_adjustment(self._market_ctx)
+                    if adj.get("stop_loss_adj", 0) != 0:
+                        logger.debug(
+                            "리스크 조정: 손절=%+.1f%% 포지션배수=%.1f",
+                            adj["stop_loss_adj"], adj["position_size_mult"],
+                        )
+        except Exception as e:
+            logger.warning("시장 컨텍스트 갱신 실패: %s", e)
 
     def _select_stocks(self) -> list[str]:
         """거래량 상위 종목을 자동 선정한다."""
@@ -94,7 +139,6 @@ class AutoTrader:
     def _run_cycle(self, stocks: list[str]) -> None:
         """하나의 매매 사이클을 실행한다."""
         self._cycle_count += 1
-        now = datetime.now().strftime("%H:%M:%S")
 
         # 1. 보유 종목 가격 갱신
         self.order_manager.update_prices()
@@ -137,13 +181,24 @@ class AutoTrader:
         if not current_price:
             return
 
+        # 멀티 타임프레임: 분봉 + 일봉 모두 수집
         candles = self.api.get_minute_chart(stock_code, period="3")
         if len(candles) < 20:
-            # 분봉 부족 시 일봉으로 보완
             candles = self.api.get_daily_chart(stock_code, count=60)
 
         if not candles:
             return
+
+        # Expert 모드: 상세 분석 로그
+        if isinstance(self.strategy, ExpertStrategy):
+            analysis = self.strategy.full_analysis(
+                stock_code,
+                current_price.get("stock_name", stock_code),
+                candles,
+                current_price,
+            )
+            if analysis.decision not in ("HOLD",):
+                logger.info("\n%s", analysis.summary())
 
         # 전략 분석
         signal = self.strategy.analyze(stock_code, candles, current_price)
@@ -154,7 +209,7 @@ class AutoTrader:
             if stock_code in self.order_manager.positions:
                 return
 
-            stock_name = self._get_stock_name(stock_code, current_price)
+            stock_name = current_price.get("stock_name", stock_code)
             logger.info(
                 "▶ 매수 신호: %s(%s) 가격=%s 강도=%.2f | %s",
                 stock_name, stock_code,
@@ -162,7 +217,9 @@ class AutoTrader:
                 signal.strength, signal.reason,
             )
 
-            if signal.strength >= 0.4:
+            # Expert 모드: 매수 강도 기준 차등
+            min_strength = 0.35 if isinstance(self.strategy, ExpertStrategy) else 0.4
+            if signal.strength >= min_strength:
                 self.order_manager.execute_buy(
                     stock_code, stock_name, current_price["price"], signal.reason
                 )
@@ -179,10 +236,6 @@ class AutoTrader:
 
                 if signal.strength >= 0.3:
                     self.order_manager.execute_sell(stock_code, signal.reason)
-
-    def _get_stock_name(self, stock_code: str, price_data: dict) -> str:
-        """종목명을 가져온다."""
-        return price_data.get("stock_name", stock_code)
 
     def _log_status(self) -> None:
         """현재 상태를 로그에 출력한다."""
@@ -203,9 +256,22 @@ class AutoTrader:
             )
         logger.info("  총 평가손익: %s원", f"{total_profit:,}")
 
+        # 시장 컨텍스트 표시
+        if self._market_ctx:
+            logger.info(
+                "  시장: %s (KOSPI=%+.2f%% KOSDAQ=%+.2f%%)",
+                self._market_ctx.regime,
+                self._market_ctx.kospi_change,
+                self._market_ctx.kosdaq_change,
+            )
+
     def run_single_cycle(self, target_stocks: list[str]) -> dict:
         """단일 매매 사이클을 실행하고 결과를 반환한다. (테스트/수동 실행용)"""
         self.order_manager.sync_positions()
+
+        if isinstance(self.strategy, ExpertStrategy):
+            self._update_market_context()
+
         self._run_cycle(target_stocks)
 
         return {
@@ -224,4 +290,5 @@ class AutoTrader:
                 t for t in self.order_manager.trade_history
                 if t.timestamp.startswith(datetime.now().strftime("%Y-%m-%d"))
             ]),
+            "market_regime": self._market_ctx.regime if self._market_ctx else "unknown",
         }
