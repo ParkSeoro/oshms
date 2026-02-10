@@ -28,8 +28,7 @@ logs/
 *.log
 
 # Reports
-reports/*.html
-reports/*.csv
+reports/
 
 # OS
 .DS_Store
