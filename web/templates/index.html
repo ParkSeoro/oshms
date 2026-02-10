@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1e1e2e">
+<title>OSHMS - 주식 자동 매매</title>
+<style>
+:root{--bg:#1e1e2e;--card:#313244;--fg:#cdd6f4;--dim:#6c7086;--accent:#89b4fa;--green:#a6e3a1;--red:#f38ba8;--yellow:#f9e2af;--input:#45475a;--border:#585b70}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--fg);min-height:100vh}
+.header{background:var(--card);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;border-bottom:1px solid var(--border)}
+.header h1{font-size:18px;color:var(--accent)}
+.status-badge{padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600}
+.status-on{background:var(--green);color:#1e1e2e}
+.status-off{background:var(--border);color:var(--fg)}
+.tabs{display:flex;background:var(--card);border-bottom:1px solid var(--border);overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tab{flex:1;padding:12px;text-align:center;cursor:pointer;font-size:14px;color:var(--dim);border-bottom:2px solid transparent;white-space:nowrap;min-width:80px}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.page{display:none;padding:16px;max-width:800px;margin:0 auto}
+.page.active{display:block}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px}
+.card{background:var(--card);border-radius:10px;padding:14px;border:1px solid var(--border)}
+.card-title{font-size:11px;color:var(--dim);margin-bottom:4px}
+.card-value{font-size:20px;font-weight:700}
+.green{color:var(--green)}.red{color:var(--red)}.yellow{color:var(--yellow)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:8px;color:var(--dim);border-bottom:1px solid var(--border);font-weight:500}
+td{padding:8px;border-bottom:1px solid var(--border)}
+.form-group{margin-bottom:14px}
+.form-group label{display:block;font-size:13px;color:var(--dim);margin-bottom:4px}
+.form-group input,.form-group select{width:100%;padding:10px;background:var(--input);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-size:14px}
+.btn{padding:12px 24px;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;width:100%;margin-top:8px}
+.btn-primary{background:var(--accent);color:#1e1e2e}
+.btn-danger{background:var(--red);color:#1e1e2e}
+.btn-success{background:var(--green);color:#1e1e2e}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.log-box{background:#11111b;border-radius:8px;padding:10px;height:300px;overflow-y:auto;font-family:'Courier New',monospace;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-all}
+.section-title{font-size:16px;font-weight:700;margin:20px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+.score-bar{display:flex;align-items:center;margin:6px 0}
+.score-label{width:70px;font-size:12px;color:var(--dim)}
+.score-track{flex:1;height:8px;background:var(--input);border-radius:4px;overflow:hidden;margin:0 8px}
+.score-fill{height:100%;border-radius:4px;transition:width .3s}
+.score-val{width:50px;font-size:12px;text-align:right}
+.decision{font-size:28px;font-weight:800;text-align:center;padding:16px;border-radius:10px;margin:10px 0}
+.decision.BUY,.decision.STRONG_BUY{background:#a6e3a120;color:var(--green)}
+.decision.SELL,.decision.STRONG_SELL{background:#f38ba820;color:var(--red)}
+.decision.HOLD{background:#f9e2af20;color:var(--yellow)}
+.reason{padding:6px 0;font-size:13px;border-bottom:1px solid var(--border)}
+.inline-form{display:flex;gap:8px;margin-bottom:10px}
+.inline-form input{flex:1}
+.inline-form button{white-space:nowrap}
+@media(max-width:480px){.cards{grid-template-columns:repeat(2,1fr)}.card-value{font-size:16px}}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>OSHMS</h1>
+  <span class="status-badge status-off" id="statusBadge">대기</span>
+</div>
+<div class="tabs">
+  <div class="tab active" onclick="showPage('dashboard')">대시보드</div>
+  <div class="tab" onclick="showPage('trading')">자동매매</div>
+  <div class="tab" onclick="showPage('analysis')">분석</div>
+  <div class="tab" onclick="showPage('settings')">설정</div>
+</div>
+
+<!-- 대시보드 -->
+<div class="page active" id="page-dashboard">
+  <div class="cards">
+    <div class="card"><div class="card-title">총 자산</div><div class="card-value" id="totalAsset">-</div></div>
+    <div class="card"><div class="card-title">총 손익</div><div class="card-value" id="totalPL">-</div></div>
+    <div class="card"><div class="card-title">수익률</div><div class="card-value" id="totalRate">-</div></div>
+    <div class="card"><div class="card-title">보유종목</div><div class="card-value" id="holdCount">-</div></div>
+  </div>
+  <button class="btn btn-primary" onclick="refreshBalance()">잔고 새로고침</button>
+  <div class="section-title">보유 종목</div>
+  <div style="overflow-x:auto"><table>
+    <thead><tr><th>종목</th><th>수량</th><th>평균가</th><th>현재가</th><th>손익</th></tr></thead>
+    <tbody id="holdingsBody"><tr><td colspan="5" style="text-align:center;color:var(--dim)">새로고침을 눌러주세요</td></tr></tbody>
+  </table></div>
+</div>
+
+<!-- 자동매매 -->
+<div class="page" id="page-trading">
+  <div class="form-group"><label>감시 종목 (빈칸=자동선정)</label><input id="tradeStocks" placeholder="005930,000660"></div>
+  <div style="display:flex;gap:8px">
+    <div class="form-group" style="flex:1"><label>전략</label>
+      <select id="tradeStrategy"><option value="expert">전문가</option><option value="scalping">스캘핑</option><option value="momentum">모멘텀</option><option value="combined">복합</option></select>
+    </div>
+    <div class="form-group" style="width:80px"><label>주기(초)</label><input id="tradeInterval" value="10" type="number"></div>
+  </div>
+  <button class="btn btn-success" id="btnStart" onclick="startTrading()">자동매매 시작</button>
+  <button class="btn btn-danger" id="btnStop" onclick="stopTrading()" disabled>중지</button>
+  <div class="section-title">매매 로그</div>
+  <div class="log-box" id="logBox"></div>
+</div>
+
+<!-- 분석 -->
+<div class="page" id="page-analysis">
+  <div class="inline-form">
+    <input id="analyzeCode" placeholder="종목코드 (예: 005930)" value="005930">
+    <input id="analyzeName" placeholder="종목명" value="삼성전자" style="max-width:120px">
+    <button class="btn btn-primary" onclick="runAnalysis()" style="width:auto;padding:10px 16px">분석</button>
+  </div>
+  <div id="analysisResult"></div>
+</div>
+
+<!-- 설정 -->
+<div class="page" id="page-settings">
+  <div class="section-title">한국투자증권 API</div>
+  <div class="form-group"><label>APP Key</label><input id="sAppKey" type="password"></div>
+  <div class="form-group"><label>APP Secret</label><input id="sAppSecret" type="password"></div>
+  <div class="form-group"><label>계좌번호</label><input id="sAccount" placeholder="12345678-01"></div>
+  <div class="form-group"><label>모의투자</label><select id="sMock"><option value="true">모의투자</option><option value="false">실전투자</option></select></div>
+  <div class="section-title">매매 설정</div>
+  <div class="form-group"><label>1회 최대 매수금액 (원)</label><input id="sMaxBuy" value="500000" type="number"></div>
+  <div class="form-group"><label>최대 보유 종목 수</label><input id="sMaxHold" value="5" type="number"></div>
+  <div class="form-group"><label>손절 비율 (%)</label><input id="sStopLoss" value="-2.0"></div>
+  <div class="form-group"><label>익절 비율 (%)</label><input id="sTakeProfit" value="3.0"></div>
+  <div class="form-group"><label>매매 시작 시간</label><input id="sStartTime" value="09:05"></div>
+  <div class="form-group"><label>매매 종료 시간</label><input id="sEndTime" value="15:10"></div>
+  <button class="btn btn-primary" onclick="saveSettings()">설정 저장</button>
+</div>
+
+<script>
+function showPage(name){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  document.querySelectorAll('.tab').forEach((t,i)=>{if(['dashboard','trading','analysis','settings'][i]===name)t.classList.add('active')});
+}
+function fmt(n){return n?n.toLocaleString():'0'}
+
+// 상태 폴링
+setInterval(async()=>{
+  try{
+    const r=await fetch('/api/status');const d=await r.json();
+    const b=document.getElementById('statusBadge');
+    if(d.trading){b.textContent='매매 중';b.className='status-badge status-on'}
+    else{b.textContent='대기';b.className='status-badge status-off'}
+    document.getElementById('btnStart').disabled=d.trading;
+    document.getElementById('btnStop').disabled=!d.trading;
+  }catch(e){}
+},3000);
+
+// 대시보드
+async function refreshBalance(){
+  try{
+    const r=await fetch('/api/balance');const d=await r.json();
+    if(d.error){alert(d.error);return}
+    const s=d.summary||{},h=d.holdings||[];
+    const cash=s.available_cash||0,eval_=s.total_eval_amount||0,pl=s.total_profit_loss||0;
+    const buy=s.total_buy_amount||0,rate=buy>0?(pl/buy*100):0;
+    document.getElementById('totalAsset').textContent=fmt(eval_+cash)+'원';
+    const plEl=document.getElementById('totalPL');plEl.textContent=(pl>=0?'+':'')+fmt(pl)+'원';plEl.className='card-value '+(pl>=0?'green':'red');
+    const rEl=document.getElementById('totalRate');rEl.textContent=rate.toFixed(2)+'%';rEl.className='card-value '+(rate>=0?'green':'red');
+    document.getElementById('holdCount').textContent=h.length+'개';
+    const tbody=document.getElementById('holdingsBody');tbody.innerHTML='';
+    if(!h.length){tbody.innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--dim)">보유 종목 없음</td></tr>';return}
+    h.forEach(x=>{const c=x.profit_loss>=0?'green':'red';
+      tbody.innerHTML+=`<tr><td>${x.stock_name}</td><td>${x.quantity}</td><td>${fmt(x.avg_price)}</td><td>${fmt(x.current_price)}</td><td class="${c}">${x.profit_loss>=0?'+':''}${fmt(x.profit_loss)}</td></tr>`});
+  }catch(e){alert('오류: '+e.message)}
+}
+
+// 자동매매
+async function startTrading(){
+  const body={stocks:document.getElementById('tradeStocks').value,strategy:document.getElementById('tradeStrategy').value,interval:document.getElementById('tradeInterval').value};
+  await fetch('/api/trade/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  document.getElementById('logBox').textContent='자동매매 시작...\n';
+}
+async function stopTrading(){await fetch('/api/trade/stop',{method:'POST'})}
+let logOffset=0;
+setInterval(async()=>{
+  try{const r=await fetch('/api/logs?since='+logOffset);const d=await r.json();
+    if(d.logs.length){const box=document.getElementById('logBox');d.logs.forEach(l=>box.textContent+=l+'\n');box.scrollTop=box.scrollHeight;logOffset=d.total}
+  }catch(e){}
+},2000);
+
+// 분석
+async function runAnalysis(){
+  const code=document.getElementById('analyzeCode').value;
+  const name=document.getElementById('analyzeName').value||code;
+  const el=document.getElementById('analysisResult');
+  el.innerHTML='<p style="color:var(--dim)">분석 중...</p>';
+  try{
+    const r=await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,name})});
+    const d=await r.json();
+    if(d.error){el.innerHTML=`<p class="red">${d.error}</p>`;return}
+    let html=`<div class="decision ${d.decision}">${d.decision}</div>`;
+    html+=`<div class="cards"><div class="card"><div class="card-title">현재가</div><div class="card-value">${fmt(d.price)}원</div></div>`;
+    html+=`<div class="card"><div class="card-title">종합점수</div><div class="card-value ${d.total_score>0?'green':'red'}">${d.total_score>0?'+':''}${d.total_score}</div></div>`;
+    html+=`<div class="card"><div class="card-title">신뢰도</div><div class="card-value">${(d.confidence*100).toFixed(0)}%</div></div></div>`;
+    const sc=d.scores;const items=[['기술분석',sc.technical],['패턴',sc.pattern],['뉴스',sc.sentiment],['시장',sc.market],['가격위치',sc.price_level]];
+    html+=`<div class="section-title">분석 점수</div>`;
+    items.forEach(([l,v])=>{const pct=((v+1)/2*100).toFixed(0);const c=v>0?'var(--green)':v<0?'var(--red)':'var(--dim)';
+      html+=`<div class="score-bar"><span class="score-label">${l}</span><div class="score-track"><div class="score-fill" style="width:${pct}%;background:${c}"></div></div><span class="score-val">${v>0?'+':''}${v.toFixed(3)}</span></div>`});
+    if(d.reasons&&d.reasons.length){html+=`<div class="section-title">분석 근거</div>`;d.reasons.forEach(r=>html+=`<div class="reason">${r}</div>`)}
+    if(d.news&&d.news.length){html+=`<div class="section-title">최신 뉴스</div>`;d.news.forEach(n=>html+=`<div class="reason">${n}</div>`)}
+    el.innerHTML=html;
+  }catch(e){el.innerHTML=`<p class="red">오류: ${e.message}</p>`}
+}
+
+// 설정
+async function loadSettings(){
+  try{const r=await fetch('/api/settings');const d=await r.json();
+    document.getElementById('sAccount').value=d.account_no||'';
+    document.getElementById('sMock').value=d.is_mock?'true':'false';
+    document.getElementById('sMaxBuy').value=d.max_buy_amount;
+    document.getElementById('sMaxHold').value=d.max_hold_count;
+    document.getElementById('sStopLoss').value=d.stop_loss_pct;
+    document.getElementById('sTakeProfit').value=d.take_profit_pct;
+    document.getElementById('sStartTime').value=d.trading_start_time;
+    document.getElementById('sEndTime').value=d.trading_end_time;
+  }catch(e){}
+}
+async function saveSettings(){
+  const body={app_key:document.getElementById('sAppKey').value,app_secret:document.getElementById('sAppSecret').value,
+    account_no:document.getElementById('sAccount').value,is_mock:document.getElementById('sMock').value==='true',
+    max_buy_amount:document.getElementById('sMaxBuy').value,max_hold_count:document.getElementById('sMaxHold').value,
+    stop_loss_pct:document.getElementById('sStopLoss').value,take_profit_pct:document.getElementById('sTakeProfit').value,
+    trading_start_time:document.getElementById('sStartTime').value,trading_end_time:document.getElementById('sEndTime').value};
+  await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  alert('설정 저장 완료');
+}
+loadSettings();
+</script>
+</body>
+</html>

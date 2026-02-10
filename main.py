@@ -7,6 +7,8 @@
     python main.py balance
     python main.py status
     python main.py analyze 005930 --name 삼성전자
+    python main.py gui          # 데스크톱 GUI 실행
+    python main.py web          # 웹 서버 실행 (모바일/PC 브라우저)
 """
 
 import argparse
@@ -162,6 +164,24 @@ def cmd_balance(args, settings: Settings) -> None:
     print("=" * 60)
 
 
+def cmd_gui(args, settings: Settings) -> None:
+    """데스크톱 GUI를 실행한다."""
+    from gui.app import OshmsApp
+    print("OSHMS 데스크톱 앱을 시작합니다...")
+    app = OshmsApp()
+    app.run()
+
+
+def cmd_web(args, settings: Settings) -> None:
+    """웹 서버를 실행한다."""
+    from web.server import run_server
+    host = args.host
+    port = args.port
+    print(f"OSHMS 웹 서버를 시작합니다: http://{host}:{port}")
+    print("브라우저에서 접속하세요. (모바일: 같은 네트워크에서 PC의 IP로 접속)")
+    run_server(host=host, port=port, debug=args.debug)
+
+
 def cmd_status(args, settings: Settings) -> None:
     """시스템 상태를 출력한다."""
     print("=" * 60)
@@ -225,6 +245,15 @@ def main() -> None:
     # status 명령어
     subparsers.add_parser("status", help="시스템 상태 확인")
 
+    # gui 명령어
+    subparsers.add_parser("gui", help="데스크톱 GUI 실행")
+
+    # web 명령어
+    web_parser = subparsers.add_parser("web", help="웹 서버 실행 (모바일/PC 브라우저)")
+    web_parser.add_argument("--host", default="0.0.0.0", help="바인드 주소 (기본: 0.0.0.0)")
+    web_parser.add_argument("--port", type=int, default=5000, help="포트 (기본: 5000)")
+    web_parser.add_argument("--debug", action="store_true", help="디버그 모드")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -240,6 +269,8 @@ def main() -> None:
         "report": cmd_report,
         "balance": cmd_balance,
         "status": cmd_status,
+        "gui": cmd_gui,
+        "web": cmd_web,
     }
 
     cmd_func = commands.get(args.command)
