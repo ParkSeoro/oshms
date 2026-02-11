@@ -197,8 +197,16 @@ class AutoTrader:
                 candles,
                 current_price,
             )
-            if analysis.decision not in ("HOLD",):
+            if analysis.decision != "HOLD":
                 logger.info("\n%s", analysis.summary())
+            elif self._cycle_count % 5 == 1:
+                # 5사이클마다 HOLD 종목도 간략히 로그
+                logger.info(
+                    "[%s] %s원 | 점수=%.3f 신뢰도=%.0f%% → HOLD",
+                    current_price.get("stock_name", stock_code),
+                    f"{current_price['price']:,}",
+                    analysis.total_score, analysis.confidence * 100,
+                )
 
         # 전략 분석
         signal = self.strategy.analyze(stock_code, candles, current_price)
@@ -218,10 +226,14 @@ class AutoTrader:
             )
 
             # Expert 모드: 매수 강도 기준 차등
-            min_strength = 0.35 if isinstance(self.strategy, ExpertStrategy) else 0.4
+            min_strength = 0.20 if isinstance(self.strategy, ExpertStrategy) else 0.3
             if signal.strength >= min_strength:
                 self.order_manager.execute_buy(
                     stock_code, stock_name, current_price["price"], signal.reason
+                )
+            else:
+                logger.debug(
+                    "  → 매수 신호 강도 부족: %.2f < %.2f (패스)", signal.strength, min_strength,
                 )
 
         elif signal.signal_type == SignalType.SELL:
@@ -234,8 +246,12 @@ class AutoTrader:
                     pos.profit_rate, signal.strength, signal.reason,
                 )
 
-                if signal.strength >= 0.3:
+                if signal.strength >= 0.15:
                     self.order_manager.execute_sell(stock_code, signal.reason)
+                else:
+                    logger.debug(
+                        "  → 매도 신호 강도 부족: %.2f < 0.15 (패스)", signal.strength,
+                    )
 
     def _log_status(self) -> None:
         """현재 상태를 로그에 출력한다."""

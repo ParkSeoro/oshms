@@ -89,11 +89,11 @@ class ExpertStrategy(BaseStrategy):
         "price_level": 0.15,
     }
 
-    # 매매 임계값
-    STRONG_BUY_THRESHOLD = 0.45
-    BUY_THRESHOLD = 0.25
-    SELL_THRESHOLD = -0.20
-    STRONG_SELL_THRESHOLD = -0.40
+    # 매매 임계값 (실전 매매를 위해 현실적 수준으로 설정)
+    STRONG_BUY_THRESHOLD = 0.30
+    BUY_THRESHOLD = 0.12
+    SELL_THRESHOLD = -0.10
+    STRONG_SELL_THRESHOLD = -0.25
 
     def __init__(self, api: KISApi | None = None, settings: Settings | None = None):
         self.technical = TechnicalAnalyzer()
@@ -284,31 +284,40 @@ class ExpertStrategy(BaseStrategy):
 
     def _calc_confidence(self, result: ExpertAnalysis) -> float:
         """신뢰도를 계산한다. 여러 지표가 같은 방향이면 높아진다."""
-        scores = [
-            result.technical_score,
-            result.pattern_score,
-            result.sentiment_score,
-            result.market_score,
-            result.price_level_score,
-        ]
+        # 활성화된 데이터 소스만으로 일치도 계산 (없는 데이터는 제외)
+        active_scores = []
+        if result.technical and result.technical.sma_20 > 0:
+            active_scores.append(result.technical_score)
+        if result.patterns:
+            active_scores.append(result.pattern_score)
+        if result.sentiment and result.sentiment.news_count > 0:
+            active_scores.append(result.sentiment_score)
+        if result.market_ctx:
+            active_scores.append(result.market_score)
+        active_scores.append(result.price_level_score)
 
-        # 방향 일치도
-        positive = sum(1 for s in scores if s > 0.1)
-        negative = sum(1 for s in scores if s < -0.1)
-        max_agreement = max(positive, negative)
-        agreement_ratio = max_agreement / len(scores)
+        # 방향 일치도 (활성 소스 기준)
+        if active_scores:
+            positive = sum(1 for s in active_scores if s > 0.05)
+            negative = sum(1 for s in active_scores if s < -0.05)
+            max_agreement = max(positive, negative)
+            agreement_ratio = max_agreement / len(active_scores)
+        else:
+            agreement_ratio = 0
 
         # 점수 크기
         magnitude = abs(result.total_score)
 
         # 데이터 충분성
-        data_quality = 0.5
+        data_quality = 0.4
         if result.technical and result.technical.sma_60 > 0:
-            data_quality += 0.2
+            data_quality += 0.25
         if result.patterns:
+            data_quality += 0.15
+        if result.sentiment and result.sentiment.news_count > 0:
             data_quality += 0.1
-        if result.sentiment and result.sentiment.news_count > 3:
-            data_quality += 0.2
+        if result.market_ctx:
+            data_quality += 0.1
 
         confidence = agreement_ratio * 0.4 + magnitude * 0.3 + data_quality * 0.3
         return min(1.0, confidence)
@@ -330,13 +339,13 @@ class ExpertStrategy(BaseStrategy):
             if not result.market_ctx.trading_ok:
                 return "HOLD"
 
-        if score >= self.STRONG_BUY_THRESHOLD + buy_adj and confidence >= 0.5:
+        if score >= self.STRONG_BUY_THRESHOLD + buy_adj and confidence >= 0.35:
             return "STRONG_BUY"
-        elif score >= self.BUY_THRESHOLD + buy_adj and confidence >= 0.35:
+        elif score >= self.BUY_THRESHOLD + buy_adj and confidence >= 0.20:
             return "BUY"
-        elif score <= self.STRONG_SELL_THRESHOLD + sell_adj and confidence >= 0.4:
+        elif score <= self.STRONG_SELL_THRESHOLD + sell_adj and confidence >= 0.30:
             return "STRONG_SELL"
-        elif score <= self.SELL_THRESHOLD + sell_adj and confidence >= 0.3:
+        elif score <= self.SELL_THRESHOLD + sell_adj and confidence >= 0.20:
             return "SELL"
         return "HOLD"
 
