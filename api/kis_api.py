@@ -402,3 +402,224 @@ class KISApi:
                 "order_time": item.get("ord_tmd", ""),
             })
         return orders
+
+    # ──────────────────────────────────────────────
+    # 해외 주식 시세 조회
+    # ──────────────────────────────────────────────
+
+    def get_overseas_price(self, market: str, stock_code: str) -> dict[str, Any]:
+        """해외 주식의 현재가 정보를 조회한다.
+
+        Args:
+            market: 거래소 코드 ("NASD", "NYSE", "AMEX", "SEHK", "TKSE")
+            stock_code: 종목 코드 (예: "AAPL", "TSLA")
+
+        Returns:
+            dict with keys: stock_code, price, open, high, low, volume, change_rate
+        """
+        tr_id = "HHDFS76200200"
+        url = f"{self.base_url}/uapi/overseas-price/v1/quotations/price"
+        params = {
+            "AUTH": "",
+            "EXCD": market,
+            "SYMB": stock_code,
+        }
+
+        resp = self.session.get(url, headers=self._headers(tr_id), params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("rt_cd") != "0":
+            logger.error("해외 현재가 조회 실패 [%s/%s]: %s", market, stock_code, data.get("msg1", ""))
+            return {}
+
+        output = data.get("output", {})
+        return {
+            "stock_code": stock_code,
+            "price": float(output.get("last", 0)),
+            "open": float(output.get("open", 0)),
+            "high": float(output.get("high", 0)),
+            "low": float(output.get("low", 0)),
+            "volume": int(output.get("tvol", 0)),
+            "change_rate": float(output.get("rate", 0)),
+        }
+
+    def get_overseas_daily_chart(
+        self, market: str, stock_code: str, period: str = "D", count: int = 60
+    ) -> list[dict]:
+        """해외 주식 일봉 데이터를 조회한다.
+
+        Args:
+            market: 거래소 코드 ("NASD", "NYSE", "AMEX", "SEHK", "TKSE")
+            stock_code: 종목 코드
+            period: "D"(일), "W"(주), "M"(월)
+            count: 조회 개수
+
+        Returns:
+            list of candle dicts (newest first)
+        """
+        tr_id = "FHKST03030100"
+        url = f"{self.base_url}/uapi/overseas-price/v1/quotations/dailyprice"
+        params = {
+            "AUTH": "",
+            "EXCD": market,
+            "SYMB": stock_code,
+            "GUBN": "0",
+            "BYMD": "",
+            "MODP": "0",
+        }
+
+        resp = self.session.get(url, headers=self._headers(tr_id), params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("rt_cd") != "0":
+            logger.error("해외 일봉 조회 실패 [%s/%s]: %s", market, stock_code, data.get("msg1", ""))
+            return []
+
+        candles = []
+        for item in data.get("output2", [])[:count]:
+            candles.append({
+                "date": item.get("xymd", ""),
+                "open": float(item.get("open", 0)),
+                "high": float(item.get("high", 0)),
+                "low": float(item.get("low", 0)),
+                "close": float(item.get("clos", 0)),
+                "volume": int(item.get("tvol", 0)),
+            })
+        return candles
+
+    # ──────────────────────────────────────────────
+    # 해외 주식 주문
+    # ──────────────────────────────────────────────
+
+    def buy_overseas_market_order(
+        self, market: str, stock_code: str, quantity: int, price: float
+    ) -> dict[str, Any]:
+        """해외 주식 매수 주문을 실행한다.
+
+        Args:
+            market: 거래소 코드 ("NASD", "NYSE", "AMEX", "SEHK", "TKSE")
+            stock_code: 종목 코드
+            quantity: 주문 수량
+            price: 주문 가격
+        """
+        return self._place_overseas_order(market, stock_code, quantity, order_type="buy", price=price)
+
+    def sell_overseas_market_order(
+        self, market: str, stock_code: str, quantity: int, price: float
+    ) -> dict[str, Any]:
+        """해외 주식 매도 주문을 실행한다.
+
+        Args:
+            market: 거래소 코드 ("NASD", "NYSE", "AMEX", "SEHK", "TKSE")
+            stock_code: 종목 코드
+            quantity: 주문 수량
+            price: 주문 가격
+        """
+        return self._place_overseas_order(market, stock_code, quantity, order_type="sell", price=price)
+
+    def _place_overseas_order(
+        self, market: str, stock_code: str, quantity: int, order_type: str, price: float
+    ) -> dict[str, Any]:
+        """해외 주식 주문을 실행한다."""
+        is_buy = order_type == "buy"
+
+        if self.settings.is_mock:
+            tr_id = "VTTT1002U" if is_buy else "VTTT1006U"
+        else:
+            tr_id = "JTTT1002U" if is_buy else "JTTT1006U"
+
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/order"
+        body = {
+            "CANO": self.settings.account_number,
+            "ACNT_PRDT_CD": self.settings.account_suffix,
+            "OVRS_EXCG_CD": market,
+            "PDNO": stock_code,
+            "ORD_QTY": str(quantity),
+            "OVRS_ORD_UNPR": str(price),
+            "ORD_SVR_DVSN_CD": "0",
+        }
+
+        hashkey = self._get_hashkey(body)
+        headers = self._headers(tr_id, hashkey=hashkey)
+
+        resp = self.session.post(url, json=body, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        side = "해외매수" if is_buy else "해외매도"
+        if data.get("rt_cd") == "0":
+            order_no = data.get("output", {}).get("ODNO", "N/A")
+            logger.info(
+                "%s 주문 성공: %s/%s %d주 @%.2f (주문번호: %s)",
+                side, market, stock_code, quantity, price, order_no,
+            )
+            return {"success": True, "order_no": order_no, "data": data.get("output", {})}
+        else:
+            msg = data.get("msg1", "알 수 없는 오류")
+            logger.error("%s 주문 실패: %s/%s - %s", side, market, stock_code, msg)
+            return {"success": False, "message": msg}
+
+    # ──────────────────────────────────────────────
+    # 해외 주식 잔고 조회
+    # ──────────────────────────────────────────────
+
+    def get_overseas_balance(self, market: str = "") -> dict[str, Any]:
+        """해외 주식 잔고를 조회한다.
+
+        Args:
+            market: 거래소 코드 (빈 문자열이면 전체 조회)
+
+        Returns:
+            dict with 'holdings' (list) and 'summary' (dict)
+        """
+        tr_id = "VTTS3012R" if self.settings.is_mock else "JTTT3012R"
+        url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
+        params = {
+            "CANO": self.settings.account_number,
+            "ACNT_PRDT_CD": self.settings.account_suffix,
+            "OVRS_EXCG_CD": market,
+            "TR_CRCY_CD": "",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": "",
+        }
+
+        resp = self.session.get(url, headers=self._headers(tr_id), params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("rt_cd") != "0":
+            logger.error("해외 잔고 조회 실패: %s", data.get("msg1", ""))
+            return {"holdings": [], "summary": {}}
+
+        holdings = []
+        for item in data.get("output1", []):
+            qty = int(item.get("ovrs_cblc_qty", 0))
+            if qty <= 0:
+                continue
+            holdings.append({
+                "stock_code": item.get("ovrs_pdno", ""),
+                "stock_name": item.get("ovrs_item_name", ""),
+                "quantity": qty,
+                "avg_price": float(item.get("pchs_avg_pric", 0)),
+                "current_price": float(item.get("now_pric2", 0)),
+                "profit_loss": float(item.get("frcr_evlu_pfls_amt", 0)),
+                "profit_rate": float(item.get("evlu_pfls_rt", 0)),
+                "buy_amount": float(item.get("frcr_pchs_amt1", 0)),
+                "eval_amount": float(item.get("ovrs_stck_evlu_amt", 0)),
+                "market": item.get("ovrs_excg_cd", ""),
+                "currency": item.get("tr_crcy_cd", ""),
+            })
+
+        summary_data = data.get("output2", [{}])
+        summary_item = summary_data[0] if summary_data else {}
+        summary = {
+            "total_buy_amount": float(summary_item.get("frcr_pchs_amt1", 0)),
+            "total_eval_amount": float(summary_item.get("ovrs_tot_pfls", 0)),
+            "total_profit_loss": float(summary_item.get("ovrs_rlzt_pfls_amt", 0)),
+            "total_profit_rate": float(summary_item.get("tot_evlu_pfls_rt", 0)) if summary_item.get("tot_evlu_pfls_rt") else 0.0,
+            "available_cash": float(summary_item.get("frcr_dncl_amt_2", 0)),
+        }
+
+        return {"holdings": holdings, "summary": summary}
