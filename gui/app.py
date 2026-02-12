@@ -564,7 +564,7 @@ class OshmsApp:
         )
         style.map(
             "Treeview",
-            background=[("selected", c["accent"] + "30")],
+            background=[("selected", c["bg_surface"])],
             foreground=[("selected", c["accent"])],
         )
 
@@ -632,11 +632,11 @@ class OshmsApp:
         if hasattr(self, 'log_text'):
             self.log_text.configure(bg="#06060f" if self.theme == "dark" else "#f8f9fc",
                                     fg=c["fg"], insertbackground=c["accent"],
-                                    selectbackground=c["accent"] + "40")
+                                    selectbackground=c["bg_surface"])
         if hasattr(self, 'analysis_text'):
             self.analysis_text.configure(bg="#06060f" if self.theme == "dark" else "#f8f9fc",
                                          fg=c["fg"], insertbackground=c["accent"],
-                                         selectbackground=c["accent"] + "40")
+                                         selectbackground=c["bg_surface"])
 
     def _apply_bg_recursive(self, widget, color):
         """재귀적으로 배경색을 적용한다."""
