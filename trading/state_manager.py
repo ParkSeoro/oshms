@@ -53,7 +53,7 @@ class StateManager:
             try:
                 data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
                 state = TradingState(**{k: v for k, v in data.items() if k in TradingState.__dataclass_fields__})
-                logger.info("거래 상태 복원: %d세션, %d거래, 수익=%+,.0f원",
+                logger.info("거래 상태 복원: %d세션, %d거래, 수익=%+.0f원",
                            state.total_sessions, state.total_trades, state.total_profit)
                 return state
             except (json.JSONDecodeError, TypeError, OSError) as e:
@@ -105,7 +105,7 @@ class StateManager:
         if len(self.state.session_history) > 30:
             self.state.session_history = self.state.session_history[-30:]
         self.save()
-        logger.info("세션 종료: %d거래, 수익=%+,.0f원", trades, profit)
+        logger.info("세션 종료: %d거래, 수익=%+.0f원", trades, profit)
 
     def get_resume_info(self) -> dict:
         """이전 세션 복원에 필요한 정보를 반환한다."""
