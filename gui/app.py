@@ -840,7 +840,8 @@ class OshmsApp:
                 balance["holdings"] = kr_holdings
                 self.root.after(0, lambda: self._update_dashboard(balance))
             except Exception as e:
-                self.root.after(0, lambda: messagebox.showerror("오류", str(e)))
+                err_msg = str(e)
+                self.root.after(0, lambda: messagebox.showerror("오류", err_msg))
 
         threading.Thread(target=_fetch, daemon=True).start()
 
@@ -1009,7 +1010,8 @@ class OshmsApp:
             self._trader.start(target_stocks=target, interval=interval)
 
         except Exception as e:
-            self.root.after(0, lambda: self._log(f"오류: {e}"))
+            err_msg = str(e)
+            self.root.after(0, lambda: self._log(f"오류: {err_msg}"))
             self.root.after(0, self._stop_trading)
         finally:
             logging.getLogger("oshms").removeHandler(handler)
@@ -1122,6 +1124,7 @@ class OshmsApp:
                     self.analysis_text.insert(tk.END, result),
                 ))
             except Exception as e:
-                self.root.after(0, lambda: self.analysis_text.insert(tk.END, f"\n오류: {e}\n"))
+                err_msg = str(e)
+                self.root.after(0, lambda: self.analysis_text.insert(tk.END, f"\n오류: {err_msg}\n"))
 
         threading.Thread(target=_analyze, daemon=True).start()
