@@ -108,7 +108,7 @@ def api_analyze():
 
         analysis = strategy.full_analysis(code, name, candles, current_price)
 
-        return jsonify({
+        result = {
             "stock_code": code,
             "stock_name": name,
             "price": analysis.price,
@@ -131,7 +131,21 @@ def api_analyze():
                 "volume_ratio": round(analysis.technical.volume_ratio, 1) if analysis.technical else 0,
                 "ichimoku": analysis.technical.ichimoku_signal if analysis.technical else "",
             },
-        })
+        }
+
+        # AI 분석 리포트 추가
+        try:
+            from strategy.ai_analyst import AIAnalyst
+            ai = AIAnalyst(api_key=s.openai_api_key)
+            ai_data = AIAnalyst.extract_analysis_data(analysis)
+            ai_result = ai.analyze(ai_data)
+            result["ai_report"] = ai_result.format_report()
+            result["ai_decision"] = ai_result.ai_decision
+            result["ai_provider"] = ai_result.provider
+        except Exception as e:
+            logger.warning("AI 분석 실패: %s", e)
+
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -226,6 +240,7 @@ def api_get_settings():
         "take_profit_pct": s.take_profit_pct,
         "trading_start_time": s.trading_start_time,
         "trading_end_time": s.trading_end_time,
+        "openai_api_key": "***" if s.openai_api_key else "",
     })
 
 
@@ -250,6 +265,10 @@ def api_save_settings():
         if key == "is_mock":
             val = "true" if val else "false"
         env_lines.append(f"{env_key}={val}")
+    # AI API 키
+    openai_key = data.get("openai_api_key", "")
+    if openai_key:
+        env_lines.append(f"OPENAI_API_KEY={openai_key}")
     env_lines.append("LOG_LEVEL=INFO")
 
     Path(".env").write_text("\n".join(env_lines) + "\n", encoding="utf-8")

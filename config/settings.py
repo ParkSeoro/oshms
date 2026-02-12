@@ -30,6 +30,10 @@ class Settings:
     # 로그
     log_level: str = "INFO"
 
+    # AI 분석
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+
     # API URL
     base_url: str = field(init=False)
 
@@ -59,6 +63,8 @@ class Settings:
             trading_start_time=os.getenv("TRADING_START_TIME", "09:05"),
             trading_end_time=os.getenv("TRADING_END_TIME", "15:10"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
+            openai_api_key=os.getenv("OPENAI_API_KEY", ""),
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         )
 
     @property

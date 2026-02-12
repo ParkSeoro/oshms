@@ -1,10 +1,11 @@
 """OSHMS 데스크톱 GUI 앱.
 
-Tkinter 기반 메인 윈도우. 탭 구성:
+Tkinter 기반 메인 윈도우. 현대적 다크 테마 디자인.
+탭 구성:
   - 대시보드: 보유 현황, 누적 통계, 자동 갱신
   - 자동매매: 시작/중지, 실시간 로그, 해외주식 지원
-  - 종목분석: 전문가 분석 (국내/해외)
-  - 설정: API키, 매매 파라미터, 테마
+  - 종목분석: 전문가 분석 + AI 리포트 (국내/해외)
+  - 설정: API키, 매매 파라미터, AI 설정, 테마
 """
 
 import json
@@ -20,38 +21,68 @@ class OshmsApp:
     """메인 데스크톱 애플리케이션."""
 
     SETTINGS_FILE = Path("config/user_settings.json")
+
+    # 현대적 다크 테마 컬러 (Catppuccin Mocha 기반)
     THEME_COLORS = {
         "dark": {
-            "bg": "#1e1e2e", "fg": "#cdd6f4", "accent": "#89b4fa",
-            "green": "#a6e3a1", "red": "#f38ba8", "card": "#313244",
-            "input_bg": "#45475a", "button": "#585b70", "yellow": "#f9e2af",
+            "bg": "#0f0f23",
+            "bg_surface": "#1a1a36",
+            "fg": "#e2e4f4",
+            "dim": "#6c7086",
+            "accent": "#7c9cff",
+            "accent2": "#a78bfa",
+            "green": "#34d399",
+            "red": "#f87171",
+            "yellow": "#fbbf24",
+            "card": "#181830",
+            "card_border": "#2a2a4a",
+            "input_bg": "#22223a",
+            "button": "#3a3a5a",
+            "button_text": "#e2e4f4",
+            "header_bg": "#0a0a1a",
+            "tab_active": "#7c9cff",
+            "tab_inactive": "#3a3a5a",
         },
         "light": {
-            "bg": "#eff1f5", "fg": "#4c4f69", "accent": "#1e66f5",
-            "green": "#40a02b", "red": "#d20f39", "card": "#ffffff",
-            "input_bg": "#e6e9ef", "button": "#ccd0da", "yellow": "#df8e1d",
+            "bg": "#f0f2f8",
+            "bg_surface": "#ffffff",
+            "fg": "#2d3048",
+            "dim": "#8890a8",
+            "accent": "#5b6abf",
+            "accent2": "#7c5cbf",
+            "green": "#22a06b",
+            "red": "#d32f2f",
+            "yellow": "#e67e22",
+            "card": "#ffffff",
+            "card_border": "#dde0ea",
+            "input_bg": "#eef0f6",
+            "button": "#dde0ea",
+            "button_text": "#2d3048",
+            "header_bg": "#e8eaf4",
+            "tab_active": "#5b6abf",
+            "tab_inactive": "#c8cce0",
         },
     }
 
     MARKETS = {
-        "KR": "한국 (KRX)",
-        "NASD": "미국 (NASDAQ)",
-        "NYSE": "미국 (NYSE)",
-        "AMEX": "미국 (AMEX)",
-        "SEHK": "홍콩 (SEHK)",
-        "TKSE": "일본 (TSE)",
+        "KR": "KR 한국",
+        "NASD": "NASD 나스닥",
+        "NYSE": "NYSE 뉴욕",
+        "AMEX": "AMEX",
+        "SEHK": "SEHK 홍콩",
+        "TKSE": "TKSE 일본",
     }
 
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("OSHMS - 주식 자동 매매 시스템")
-        self.root.geometry("1100x800")
-        self.root.minsize(900, 650)
+        self.root.title("OSHMS - AI 주식 자동매매 시스템")
+        self.root.geometry("1150x850")
+        self.root.minsize(950, 700)
 
         self.settings = Settings.from_env()
         self.user_prefs = self._load_user_prefs()
         self.theme = self.user_prefs.get("theme", "dark")
-        self.colors = self.THEME_COLORS[self.theme]
+        self.c = self.THEME_COLORS[self.theme]
 
         self._trader = None
         self._trading_thread = None
@@ -72,24 +103,53 @@ class OshmsApp:
     # ─────────────────── UI 빌드 ───────────────────
 
     def _build_ui(self):
-        # 상단 헤더
-        self.header = tk.Frame(self.root, height=50)
-        self.header.pack(fill=tk.X, padx=0, pady=0)
+        c = self.c
+
+        # 헤더
+        self.header = tk.Frame(self.root, height=56)
+        self.header.pack(fill=tk.X)
+        self.header.pack_propagate(False)
+
+        # 로고 영역
+        logo_frame = tk.Frame(self.header)
+        logo_frame.pack(side=tk.LEFT, padx=18, pady=10)
+
+        self.logo_badge = tk.Label(
+            logo_frame, text=" O ", font=("Helvetica", 13, "bold"),
+            fg="#ffffff", padx=4, pady=2,
+        )
+        self.logo_badge.pack(side=tk.LEFT, padx=(0, 8))
 
         self.title_label = tk.Label(
-            self.header, text="OSHMS 주식 자동 매매", font=("", 16, "bold"),
+            logo_frame, text="OSHMS", font=("Helvetica", 17, "bold"),
         )
-        self.title_label.pack(side=tk.LEFT, padx=15, pady=10)
+        self.title_label.pack(side=tk.LEFT)
 
-        self.status_label = tk.Label(self.header, text="대기 중", font=("", 11))
-        self.status_label.pack(side=tk.RIGHT, padx=15, pady=10)
+        self.subtitle_label = tk.Label(
+            logo_frame, text="AI Trading System", font=("Helvetica", 9),
+        )
+        self.subtitle_label.pack(side=tk.LEFT, padx=(8, 0), pady=(3, 0))
 
-        self.evo_label = tk.Label(self.header, text="", font=("", 9))
-        self.evo_label.pack(side=tk.RIGHT, padx=5, pady=10)
+        # 상태 영역 (오른쪽)
+        status_frame = tk.Frame(self.header)
+        status_frame.pack(side=tk.RIGHT, padx=18, pady=10)
 
-        # 탭
+        self.evo_label = tk.Label(status_frame, text="", font=("Helvetica", 9))
+        self.evo_label.pack(side=tk.LEFT, padx=(0, 12))
+
+        self.status_dot = tk.Label(status_frame, text="●", font=("", 8))
+        self.status_dot.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.status_label = tk.Label(status_frame, text="대기중", font=("Helvetica", 11, "bold"))
+        self.status_label.pack(side=tk.LEFT)
+
+        # 구분선
+        self.header_line = tk.Frame(self.root, height=1)
+        self.header_line.pack(fill=tk.X)
+
+        # 탭 노트북 (커스텀 스타일)
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
 
         self._build_dashboard_tab()
         self._build_trading_tab()
@@ -100,200 +160,249 @@ class OshmsApp:
 
     def _build_dashboard_tab(self):
         frame = tk.Frame(self.notebook)
-        self.notebook.add(frame, text="  대시보드  ")
+        self.notebook.add(frame, text="   대시보드   ")
 
-        # 요약 카드
-        cards_frame = tk.Frame(frame)
-        cards_frame.pack(fill=tk.X, padx=15, pady=10)
+        # 스크롤 가능한 컨테이너
+        canvas = tk.Canvas(frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=canvas.yview)
+        inner = tk.Frame(canvas)
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # 메인 자산 카드
+        cards_frame = tk.Frame(inner)
+        cards_frame.pack(fill=tk.X, padx=20, pady=(16, 8))
 
         self.card_labels = {}
         card_items = [
-            ("total_asset", "총 자산", "- 원"),
-            ("total_profit", "총 손익", "- 원"),
-            ("profit_rate", "수익률", "-"),
-            ("hold_count", "보유 종목", "- 개"),
-            ("today_trades", "오늘 거래", "- 건"),
+            ("total_asset", "총 자산", "-- 원", "accent"),
+            ("total_profit", "총 손익", "-- 원", "green"),
+            ("profit_rate", "수익률", "--", "accent2"),
+            ("hold_count", "보유 종목", "0 개", "yellow"),
+            ("today_trades", "오늘 거래", "0 건", "dim"),
         ]
-        for i, (key, title, default) in enumerate(card_items):
-            card = tk.Frame(cards_frame, relief=tk.RIDGE, bd=1, padx=15, pady=10)
+        for i, (key, title, default, color_key) in enumerate(card_items):
+            card = tk.Frame(cards_frame, padx=18, pady=14)
             card.grid(row=0, column=i, padx=5, sticky="nsew")
             cards_frame.columnconfigure(i, weight=1)
-            tk.Label(card, text=title, font=("", 9)).pack(anchor=tk.W)
-            lbl = tk.Label(card, text=default, font=("", 14, "bold"))
-            lbl.pack(anchor=tk.W, pady=(3, 0))
-            self.card_labels[key] = lbl
 
-        # 누적 통계 카드 (2번째 줄)
-        stats_frame = tk.Frame(frame)
-        stats_frame.pack(fill=tk.X, padx=15, pady=(0, 5))
+            tk.Label(card, text=title, font=("Helvetica", 10)).pack(anchor=tk.W)
+            lbl = tk.Label(card, text=default, font=("Helvetica", 16, "bold"))
+            lbl.pack(anchor=tk.W, pady=(5, 0))
+            self.card_labels[key] = lbl
+            self.card_labels[f"{key}_card"] = card
+
+        # 누적 통계
+        stats_frame = tk.Frame(inner)
+        stats_frame.pack(fill=tk.X, padx=20, pady=(4, 8))
 
         self.stat_labels = {}
         stat_items = [
             ("cum_trades", "누적 거래", "0 건"),
-            ("cum_wins", "승률", "-"),
+            ("cum_wins", "승률", "--"),
             ("cum_profit", "누적 수익", "0 원"),
             ("best_trade", "최고 수익", "0 원"),
             ("evo_gen", "진화 세대", "#0"),
         ]
         for i, (key, title, default) in enumerate(stat_items):
-            card = tk.Frame(stats_frame, relief=tk.GROOVE, bd=1, padx=12, pady=6)
-            card.grid(row=0, column=i, padx=5, sticky="nsew")
+            card = tk.Frame(stats_frame, padx=14, pady=10)
+            card.grid(row=0, column=i, padx=4, sticky="nsew")
             stats_frame.columnconfigure(i, weight=1)
-            tk.Label(card, text=title, font=("", 8)).pack(anchor=tk.W)
-            lbl = tk.Label(card, text=default, font=("", 11, "bold"))
-            lbl.pack(anchor=tk.W, pady=(2, 0))
+            tk.Label(card, text=title, font=("Helvetica", 9)).pack(anchor=tk.W)
+            lbl = tk.Label(card, text=default, font=("Helvetica", 13, "bold"))
+            lbl.pack(anchor=tk.W, pady=(3, 0))
             self.stat_labels[key] = lbl
+            self.stat_labels[f"{key}_card"] = card
 
         # 보유 종목 테이블
-        tk.Label(frame, text="보유 종목", font=("", 12, "bold")).pack(
-            anchor=tk.W, padx=15, pady=(10, 5),
-        )
+        holdings_header = tk.Frame(inner)
+        holdings_header.pack(fill=tk.X, padx=20, pady=(12, 4))
+        tk.Label(holdings_header, text="보유 종목", font=("Helvetica", 13, "bold")).pack(side=tk.LEFT)
+        self.holdings_count_lbl = tk.Label(holdings_header, text="0 종목", font=("Helvetica", 10))
+        self.holdings_count_lbl.pack(side=tk.RIGHT)
 
         cols = ("종목명", "시장", "수량", "평균가", "현재가", "손익", "수익률")
-        self.holdings_tree = ttk.Treeview(frame, columns=cols, show="headings", height=6)
+        tree_frame = tk.Frame(inner)
+        tree_frame.pack(fill=tk.BOTH, padx=20, pady=(0, 8))
+        self.holdings_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=6)
         for col in cols:
             self.holdings_tree.heading(col, text=col)
-            w = 120 if col == "종목명" else 60 if col == "시장" else 85
+            w = 130 if col == "종목명" else 65 if col == "시장" else 90
             self.holdings_tree.column(col, width=w, anchor=tk.E if col not in ("종목명", "시장") else tk.W)
-        self.holdings_tree.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 5))
+        hsb = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.holdings_tree.xview)
+        self.holdings_tree.configure(xscrollcommand=hsb.set)
+        self.holdings_tree.pack(fill=tk.BOTH, expand=True)
+        hsb.pack(fill=tk.X)
 
-        # 최근 거래 내역
-        tk.Label(frame, text="최근 거래", font=("", 12, "bold")).pack(
-            anchor=tk.W, padx=15, pady=(5, 3),
+        # 최근 거래
+        tk.Label(inner, text="최근 거래", font=("Helvetica", 13, "bold")).pack(
+            anchor=tk.W, padx=20, pady=(8, 4),
         )
         trade_cols = ("시간", "종목", "매매", "수량", "가격", "손익")
-        self.trades_tree = ttk.Treeview(frame, columns=trade_cols, show="headings", height=4)
+        trade_frame = tk.Frame(inner)
+        trade_frame.pack(fill=tk.BOTH, padx=20, pady=(0, 8))
+        self.trades_tree = ttk.Treeview(trade_frame, columns=trade_cols, show="headings", height=4)
         for col in trade_cols:
             self.trades_tree.heading(col, text=col)
-            w = 130 if col == "시간" else 100 if col == "종목" else 70
+            w = 140 if col == "시간" else 110 if col == "종목" else 75
             self.trades_tree.column(col, width=w, anchor=tk.E if col in ("수량", "가격", "손익") else tk.W)
-        self.trades_tree.pack(fill=tk.BOTH, padx=15, pady=(0, 5))
+        self.trades_tree.pack(fill=tk.BOTH, expand=True)
 
-        # 버튼
-        btn_frame = tk.Frame(frame)
-        btn_frame.pack(fill=tk.X, padx=15, pady=(0, 10))
-        tk.Button(btn_frame, text="잔고 새로고침", command=self._refresh_balance).pack(side=tk.LEFT)
+        # 하단 버튼
+        btn_frame = tk.Frame(inner)
+        btn_frame.pack(fill=tk.X, padx=20, pady=(4, 16))
+        self.refresh_btn = tk.Button(
+            btn_frame, text="  새로고침  ", command=self._refresh_balance,
+            font=("Helvetica", 10, "bold"), relief=tk.FLAT, padx=16, pady=6,
+            cursor="hand2",
+        )
+        self.refresh_btn.pack(side=tk.LEFT)
         self.auto_refresh_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(btn_frame, text="자동 갱신 (30초)", variable=self.auto_refresh_var).pack(side=tk.LEFT, padx=10)
+        tk.Checkbutton(btn_frame, text="자동 갱신 (30초)", variable=self.auto_refresh_var,
+                       font=("Helvetica", 10)).pack(side=tk.LEFT, padx=12)
 
     # ── 자동매매 탭 ──
 
     def _build_trading_tab(self):
         frame = tk.Frame(self.notebook)
-        self.notebook.add(frame, text="  자동매매  ")
+        self.notebook.add(frame, text="   자동매매   ")
 
-        # 시장 선택 + 컨트롤
-        ctrl = tk.Frame(frame)
-        ctrl.pack(fill=tk.X, padx=15, pady=10)
+        # 설정 영역
+        settings_card = tk.Frame(frame, padx=20, pady=16)
+        settings_card.pack(fill=tk.X, padx=20, pady=(16, 8))
 
-        tk.Label(ctrl, text="시장:").pack(side=tk.LEFT)
+        # 시장 선택
+        market_row = tk.Frame(settings_card)
+        market_row.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(market_row, text="마켓", font=("Helvetica", 11, "bold")).pack(side=tk.LEFT, padx=(0, 10))
         self.market_var = tk.StringVar(value="KR")
         market_combo = ttk.Combobox(
-            ctrl, textvariable=self.market_var, width=16,
+            market_row, textvariable=self.market_var, width=16,
             values=list(self.MARKETS.values()), state="readonly",
         )
-        market_combo.set("한국 (KRX)")
+        market_combo.set("KR 한국")
         market_combo.pack(side=tk.LEFT, padx=5)
 
-        tk.Label(ctrl, text="종목:").pack(side=tk.LEFT, padx=(10, 0))
-        self.stocks_entry = tk.Entry(ctrl, width=25)
+        # 종목/전략/주기
+        ctrl_row = tk.Frame(settings_card)
+        ctrl_row.pack(fill=tk.X, pady=(0, 10))
+
+        tk.Label(ctrl_row, text="종목:", font=("Helvetica", 10)).pack(side=tk.LEFT)
+        self.stocks_entry = tk.Entry(ctrl_row, width=22, font=("Helvetica", 10))
         self.stocks_entry.pack(side=tk.LEFT, padx=5)
         self.stocks_entry.insert(0, "자동선정")
 
-        tk.Label(ctrl, text="전략:").pack(side=tk.LEFT, padx=(10, 0))
+        tk.Label(ctrl_row, text="전략:", font=("Helvetica", 10)).pack(side=tk.LEFT, padx=(12, 0))
         self.strategy_var = tk.StringVar(value="expert")
         ttk.Combobox(
-            ctrl, textvariable=self.strategy_var, width=10,
+            ctrl_row, textvariable=self.strategy_var, width=10,
             values=["expert", "scalping", "momentum", "combined"],
             state="readonly",
         ).pack(side=tk.LEFT, padx=5)
 
-        tk.Label(ctrl, text="주기(초):").pack(side=tk.LEFT, padx=(10, 0))
+        tk.Label(ctrl_row, text="주기(초):", font=("Helvetica", 10)).pack(side=tk.LEFT, padx=(12, 0))
         self.interval_var = tk.StringVar(value="10")
-        tk.Entry(ctrl, textvariable=self.interval_var, width=4).pack(side=tk.LEFT, padx=5)
+        tk.Entry(ctrl_row, textvariable=self.interval_var, width=4, font=("Helvetica", 10)).pack(side=tk.LEFT, padx=5)
 
-        # 이전 세션 복원 버튼
-        resume_frame = tk.Frame(frame)
-        resume_frame.pack(fill=tk.X, padx=15)
-        self.resume_label = tk.Label(resume_frame, text="", font=("", 9))
+        # 이전 세션 복원
+        resume_frame = tk.Frame(settings_card)
+        resume_frame.pack(fill=tk.X, pady=(0, 8))
+        self.resume_label = tk.Label(resume_frame, text="", font=("Helvetica", 9))
         self.resume_label.pack(side=tk.LEFT)
         self.resume_btn = tk.Button(
             resume_frame, text="이전 세션 이어하기", command=self._resume_trading,
-            font=("", 9),
+            font=("Helvetica", 9), relief=tk.FLAT, padx=10, pady=2, cursor="hand2",
         )
 
         # 시작/중지 버튼
-        btn_frame = tk.Frame(frame)
-        btn_frame.pack(fill=tk.X, padx=15, pady=5)
+        btn_frame = tk.Frame(settings_card)
+        btn_frame.pack(fill=tk.X, pady=(4, 0))
 
         self.start_btn = tk.Button(
-            btn_frame, text="자동매매 시작", font=("", 11, "bold"),
-            command=self._start_trading, width=20, height=2,
+            btn_frame, text="  자동매매 시작  ", font=("Helvetica", 12, "bold"),
+            command=self._start_trading, relief=tk.FLAT, padx=24, pady=10,
+            cursor="hand2",
         )
-        self.start_btn.pack(side=tk.LEFT, padx=5)
+        self.start_btn.pack(side=tk.LEFT, padx=(0, 10))
 
         self.stop_btn = tk.Button(
-            btn_frame, text="중지", font=("", 11),
-            command=self._stop_trading, width=10, height=2, state=tk.DISABLED,
+            btn_frame, text="  중지  ", font=("Helvetica", 11),
+            command=self._stop_trading, relief=tk.FLAT, padx=16, pady=10,
+            state=tk.DISABLED, cursor="hand2",
         )
-        self.stop_btn.pack(side=tk.LEFT, padx=5)
+        self.stop_btn.pack(side=tk.LEFT)
 
         # 실시간 로그
-        tk.Label(frame, text="매매 로그", font=("", 11, "bold")).pack(
-            anchor=tk.W, padx=15, pady=(10, 5),
+        log_header = tk.Frame(frame)
+        log_header.pack(fill=tk.X, padx=20, pady=(12, 4))
+        tk.Label(log_header, text="매매 로그", font=("Helvetica", 12, "bold")).pack(side=tk.LEFT)
+
+        self.log_text = scrolledtext.ScrolledText(
+            frame, height=16, font=("Consolas", 10), wrap=tk.WORD,
         )
-        self.log_text = scrolledtext.ScrolledText(frame, height=18, font=("Courier", 10))
-        self.log_text.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 10))
+        self.log_text.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 16))
 
     # ── 종목분석 탭 ──
 
     def _build_analysis_tab(self):
         frame = tk.Frame(self.notebook)
-        self.notebook.add(frame, text="  종목분석  ")
+        self.notebook.add(frame, text="   종목분석   ")
 
-        search_frame = tk.Frame(frame)
-        search_frame.pack(fill=tk.X, padx=15, pady=10)
+        # 검색 카드
+        search_card = tk.Frame(frame, padx=20, pady=16)
+        search_card.pack(fill=tk.X, padx=20, pady=(16, 8))
 
-        tk.Label(search_frame, text="시장:").pack(side=tk.LEFT)
+        search_row = tk.Frame(search_card)
+        search_row.pack(fill=tk.X)
+
+        tk.Label(search_row, text="시장:", font=("Helvetica", 10)).pack(side=tk.LEFT)
         self.analyze_market_var = tk.StringVar(value="KR")
-        market_combo = ttk.Combobox(
-            search_frame, textvariable=self.analyze_market_var, width=14,
+        ttk.Combobox(
+            search_row, textvariable=self.analyze_market_var, width=10,
             values=["KR", "NASD", "NYSE", "AMEX", "SEHK", "TKSE"], state="readonly",
-        )
-        market_combo.pack(side=tk.LEFT, padx=5)
+        ).pack(side=tk.LEFT, padx=5)
 
-        tk.Label(search_frame, text="종목코드:").pack(side=tk.LEFT, padx=(10, 0))
-        self.analyze_code = tk.Entry(search_frame, width=10)
+        tk.Label(search_row, text="코드:", font=("Helvetica", 10)).pack(side=tk.LEFT, padx=(12, 0))
+        self.analyze_code = tk.Entry(search_row, width=10, font=("Helvetica", 10))
         self.analyze_code.pack(side=tk.LEFT, padx=5)
         self.analyze_code.insert(0, "005930")
 
-        tk.Label(search_frame, text="종목명:").pack(side=tk.LEFT, padx=(10, 0))
-        self.analyze_name = tk.Entry(search_frame, width=12)
+        tk.Label(search_row, text="종목명:", font=("Helvetica", 10)).pack(side=tk.LEFT, padx=(12, 0))
+        self.analyze_name = tk.Entry(search_row, width=12, font=("Helvetica", 10))
         self.analyze_name.pack(side=tk.LEFT, padx=5)
         self.analyze_name.insert(0, "삼성전자")
 
-        tk.Button(search_frame, text="전문가 분석", command=self._run_analysis).pack(
-            side=tk.LEFT, padx=10,
+        self.analyze_btn = tk.Button(
+            search_row, text="  AI 분석  ", command=self._run_analysis,
+            font=("Helvetica", 10, "bold"), relief=tk.FLAT, padx=14, pady=4,
+            cursor="hand2",
         )
+        self.analyze_btn.pack(side=tk.LEFT, padx=10)
 
-        # 예시
+        # 힌트
         hint = tk.Label(
-            frame,
-            text="예) KR: 005930(삼성전자) | NASD: AAPL(애플), TSLA(테슬라) | NYSE: BRK.B(버크셔) | SEHK: 00700(텐센트)",
-            font=("", 8),
+            search_card,
+            text="예) KR: 005930(삼성전자) | NASD: AAPL(애플), TSLA(테슬라) | NYSE: BRK.B | SEHK: 00700",
+            font=("Helvetica", 9),
         )
-        hint.pack(anchor=tk.W, padx=15)
+        hint.pack(anchor=tk.W, pady=(8, 0))
 
-        self.analysis_text = scrolledtext.ScrolledText(frame, height=28, font=("Courier", 10))
-        self.analysis_text.pack(fill=tk.BOTH, expand=True, padx=15, pady=(5, 10))
+        # 분석 결과
+        self.analysis_text = scrolledtext.ScrolledText(
+            frame, height=28, font=("Consolas", 10), wrap=tk.WORD,
+        )
+        self.analysis_text.pack(fill=tk.BOTH, expand=True, padx=20, pady=(4, 16))
 
     # ── 설정 탭 ──
 
     def _build_settings_tab(self):
         frame = tk.Frame(self.notebook)
-        self.notebook.add(frame, text="  설정  ")
+        self.notebook.add(frame, text="   설정   ")
 
-        canvas = tk.Canvas(frame)
+        canvas = tk.Canvas(frame, highlightthickness=0)
         scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=canvas.yview)
         inner = tk.Frame(canvas)
 
@@ -323,6 +432,11 @@ class OshmsApp:
         row = self._add_setting(inner, "매매 시작 시간", "trading_start_time", row)
         row = self._add_setting(inner, "매매 종료 시간", "trading_end_time", row)
 
+        # AI 분석
+        row = self._add_section(inner, "AI 분석 설정", row)
+        row = self._add_setting(inner, "OpenAI API Key", "openai_api_key", row, show="*")
+        row = self._add_setting(inner, "Anthropic API Key", "anthropic_api_key", row, show="*")
+
         # 네이버 API
         row = self._add_section(inner, "네이버 검색 API (선택)", row)
         row = self._add_setting(inner, "Client ID", "naver_client_id", row)
@@ -340,65 +454,198 @@ class OshmsApp:
 
         # 저장 버튼
         btn_frame = tk.Frame(inner)
-        btn_frame.grid(row=row, column=0, columnspan=2, pady=20, padx=15)
+        btn_frame.grid(row=row, column=0, columnspan=2, pady=20, padx=20)
 
-        tk.Button(
-            btn_frame, text="설정 저장", font=("", 11, "bold"),
-            command=self._save_settings, width=15, height=2,
-        ).pack(side=tk.LEFT, padx=5)
+        self.save_btn = tk.Button(
+            btn_frame, text="  설정 저장  ", font=("Helvetica", 11, "bold"),
+            command=self._save_settings, relief=tk.FLAT, padx=20, pady=8,
+            cursor="hand2",
+        )
+        self.save_btn.pack(side=tk.LEFT, padx=5)
 
-        tk.Button(
-            btn_frame, text="설정 검증", command=self._validate_settings, width=12, height=2,
-        ).pack(side=tk.LEFT, padx=5)
+        self.validate_btn = tk.Button(
+            btn_frame, text="  설정 검증  ", command=self._validate_settings,
+            font=("Helvetica", 10), relief=tk.FLAT, padx=14, pady=8,
+            cursor="hand2",
+        )
+        self.validate_btn.pack(side=tk.LEFT, padx=5)
 
     def _add_section(self, parent, title, row):
-        tk.Label(parent, text=title, font=("", 12, "bold")).grid(
-            row=row, column=0, columnspan=2, sticky=tk.W, padx=15, pady=(20, 5),
-        )
-        return row + 1
+        lbl = tk.Label(parent, text=title, font=("Helvetica", 13, "bold"))
+        lbl.grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=20, pady=(20, 5))
+        sep = tk.Frame(parent, height=1)
+        sep.grid(row=row + 1, column=0, columnspan=2, sticky="ew", padx=20)
+        return row + 2
 
     def _add_setting(self, parent, label, key, row, show=""):
-        tk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, padx=(30, 10), pady=3)
-        var = tk.StringVar()
-        tk.Entry(parent, textvariable=var, width=35, show=show).grid(
-            row=row, column=1, sticky=tk.W, pady=3,
+        tk.Label(parent, text=label, font=("Helvetica", 10)).grid(
+            row=row, column=0, sticky=tk.W, padx=(35, 10), pady=4,
         )
+        var = tk.StringVar()
+        entry = tk.Entry(parent, textvariable=var, width=35, show=show,
+                         font=("Helvetica", 10), relief=tk.FLAT)
+        entry.grid(row=row, column=1, sticky=tk.W, pady=4, padx=(0, 20))
         self.setting_vars[key] = var
         return row + 1
 
     def _add_checkbox(self, parent, label, key, row):
         var = tk.BooleanVar()
-        tk.Checkbutton(parent, text=label, variable=var).grid(
-            row=row, column=0, columnspan=2, sticky=tk.W, padx=30, pady=3,
-        )
+        cb = tk.Checkbutton(parent, text=label, variable=var, font=("Helvetica", 10))
+        cb.grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=35, pady=4)
         self.setting_vars[key] = var
         return row + 1
 
     def _add_radio(self, parent, label, key, values, labels, row):
-        tk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, padx=(30, 10), pady=3)
+        tk.Label(parent, text=label, font=("Helvetica", 10)).grid(
+            row=row, column=0, sticky=tk.W, padx=(35, 10), pady=4,
+        )
         var = tk.StringVar(value=values[0])
         radio_frame = tk.Frame(parent)
-        radio_frame.grid(row=row, column=1, sticky=tk.W, pady=3)
+        radio_frame.grid(row=row, column=1, sticky=tk.W, pady=4)
         for v, l in zip(values, labels):
-            tk.Radiobutton(radio_frame, text=l, variable=var, value=v).pack(side=tk.LEFT, padx=5)
+            tk.Radiobutton(radio_frame, text=l, variable=var, value=v,
+                           font=("Helvetica", 10)).pack(side=tk.LEFT, padx=5)
         self.setting_vars[key] = var
         return row + 1
 
     # ─────────────────── 테마 ───────────────────
 
     def _apply_theme(self):
-        c = self.colors
-        self.root.configure(bg=c["bg"])
-        self.header.configure(bg=c["bg"])
-        self.title_label.configure(bg=c["bg"], fg=c["accent"])
-        self.status_label.configure(bg=c["bg"], fg=c["fg"])
-        self.evo_label.configure(bg=c["bg"], fg=c["yellow"])
+        c = self.c
 
+        # Root
+        self.root.configure(bg=c["bg"])
+
+        # Header
+        self.header.configure(bg=c["header_bg"])
+        self.logo_badge.configure(bg=c["accent"], fg="#ffffff")
+        self.title_label.configure(bg=c["header_bg"], fg=c["accent"])
+        self.subtitle_label.configure(bg=c["header_bg"], fg=c["dim"])
+        self.status_label.configure(bg=c["header_bg"], fg=c["fg"])
+        self.status_dot.configure(bg=c["header_bg"], fg=c["dim"])
+        self.evo_label.configure(bg=c["header_bg"], fg=c["yellow"])
+        self.header_line.configure(bg=c["card_border"])
+
+        # ttk Style
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("TNotebook", background=c["bg"])
-        style.configure("TNotebook.Tab", background=c["button"], foreground=c["fg"], padding=[12, 6])
-        style.map("TNotebook.Tab", background=[("selected", c["accent"])], foreground=[("selected", "#ffffff")])
+
+        # Notebook (탭)
+        style.configure("TNotebook", background=c["bg"], borderwidth=0)
+        style.configure(
+            "TNotebook.Tab",
+            background=c["tab_inactive"],
+            foreground=c["dim"],
+            padding=[18, 8],
+            font=("Helvetica", 10, "bold"),
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", c["bg_surface"])],
+            foreground=[("selected", c["accent"])],
+        )
+
+        # Treeview
+        style.configure(
+            "Treeview",
+            background=c["card"],
+            foreground=c["fg"],
+            fieldbackground=c["card"],
+            borderwidth=0,
+            font=("Helvetica", 10),
+            rowheight=28,
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=c["bg_surface"],
+            foreground=c["dim"],
+            font=("Helvetica", 9, "bold"),
+            borderwidth=0,
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", c["accent"] + "30")],
+            foreground=[("selected", c["accent"])],
+        )
+
+        # Combobox
+        style.configure(
+            "TCombobox",
+            fieldbackground=c["input_bg"],
+            background=c["button"],
+            foreground=c["fg"],
+        )
+
+        # 스크롤바
+        style.configure(
+            "Vertical.TScrollbar",
+            background=c["button"],
+            troughcolor=c["bg"],
+            borderwidth=0,
+        )
+
+        # 체크박스
+        style.configure(
+            "TCheckbutton",
+            background=c["bg"],
+            foreground=c["fg"],
+        )
+
+        # 각 탭 프레임 배경색 적용
+        for tab_id in self.notebook.tabs():
+            widget = self.notebook.nametowidget(tab_id)
+            self._apply_bg_recursive(widget, c["bg"])
+
+        # 카드 스타일 (대시보드)
+        for key in list(self.card_labels.keys()):
+            if key.endswith("_card"):
+                self.card_labels[key].configure(bg=c["card"],
+                                                highlightbackground=c["card_border"],
+                                                highlightthickness=1)
+
+        for key in list(self.stat_labels.keys()):
+            if key.endswith("_card"):
+                self.stat_labels[key].configure(bg=c["card"],
+                                                highlightbackground=c["card_border"],
+                                                highlightthickness=1)
+
+        # 버튼 스타일
+        for btn, color in [
+            (self.refresh_btn, c["accent"]),
+            (self.start_btn, c["green"]),
+            (self.stop_btn, c["red"]),
+            (self.save_btn, c["accent"]),
+        ]:
+            if hasattr(self, btn.winfo_name()):
+                pass
+            btn.configure(bg=color, fg="#ffffff" if self.theme == "dark" else c["bg"],
+                         activebackground=color, activeforeground="#ffffff")
+
+        if hasattr(self, 'analyze_btn'):
+            self.analyze_btn.configure(bg=c["accent2"], fg="#ffffff",
+                                       activebackground=c["accent2"], activeforeground="#ffffff")
+        if hasattr(self, 'validate_btn'):
+            self.validate_btn.configure(bg=c["button"], fg=c["fg"],
+                                        activebackground=c["button"])
+
+        # 로그 텍스트
+        if hasattr(self, 'log_text'):
+            self.log_text.configure(bg="#06060f" if self.theme == "dark" else "#f8f9fc",
+                                    fg=c["fg"], insertbackground=c["accent"],
+                                    selectbackground=c["accent"] + "40")
+        if hasattr(self, 'analysis_text'):
+            self.analysis_text.configure(bg="#06060f" if self.theme == "dark" else "#f8f9fc",
+                                         fg=c["fg"], insertbackground=c["accent"],
+                                         selectbackground=c["accent"] + "40")
+
+    def _apply_bg_recursive(self, widget, color):
+        """재귀적으로 배경색을 적용한다."""
+        try:
+            widget.configure(bg=color)
+        except tk.TclError:
+            pass
+        for child in widget.winfo_children():
+            self._apply_bg_recursive(child, color)
 
     # ─────────────────── 설정 로드/저장 ───────────────────
 
@@ -423,6 +670,8 @@ class OshmsApp:
             "trading_end_time": self.settings.trading_end_time,
             "naver_client_id": self.user_prefs.get("naver_client_id", ""),
             "naver_client_secret": self.user_prefs.get("naver_client_secret", ""),
+            "openai_api_key": self.settings.openai_api_key,
+            "anthropic_api_key": self.user_prefs.get("anthropic_api_key", ""),
             "learn_interval": str(self.user_prefs.get("learn_interval", 20)),
         }
         for key, val in mapping.items():
@@ -449,11 +698,11 @@ class OshmsApp:
                 self.stat_labels["cum_trades"].config(text=f"{stats['total_trades']} 건")
                 self.stat_labels["cum_wins"].config(
                     text=f"{stats['win_rate']:.1f}%",
-                    fg=self.colors["green"] if stats["win_rate"] >= 50 else self.colors["red"],
+                    fg=self.c["green"] if stats["win_rate"] >= 50 else self.c["red"],
                 )
                 self.stat_labels["cum_profit"].config(
                     text=f"{stats['total_profit']:+,.0f} 원",
-                    fg=self.colors["green"] if stats["total_profit"] >= 0 else self.colors["red"],
+                    fg=self.c["green"] if stats["total_profit"] >= 0 else self.c["red"],
                 )
                 self.stat_labels["best_trade"].config(text=f"{stats['best_trade']:+,.0f} 원")
                 self.stat_labels["evo_gen"].config(text=f"#{stats['evolution_gen']}")
@@ -468,7 +717,6 @@ class OshmsApp:
         except Exception:
             pass
 
-        # 거래 내역 로드
         self._load_trade_history()
 
     def _load_trade_history(self):
@@ -516,6 +764,8 @@ class OshmsApp:
             f"TRADING_END_TIME={self.setting_vars['trading_end_time'].get()}",
             f"NAVER_CLIENT_ID={self.setting_vars.get('naver_client_id', tk.StringVar()).get()}",
             f"NAVER_CLIENT_SECRET={self.setting_vars.get('naver_client_secret', tk.StringVar()).get()}",
+            f"OPENAI_API_KEY={self.setting_vars.get('openai_api_key', tk.StringVar()).get()}",
+            f"ANTHROPIC_API_KEY={self.setting_vars.get('anthropic_api_key', tk.StringVar()).get()}",
             f"LOG_LEVEL=INFO",
         ]
         Path(".env").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
@@ -527,6 +777,7 @@ class OshmsApp:
             "learn_interval": self.setting_vars.get("learn_interval", tk.StringVar(value="20")).get(),
             "naver_client_id": self.setting_vars.get("naver_client_id", tk.StringVar()).get(),
             "naver_client_secret": self.setting_vars.get("naver_client_secret", tk.StringVar()).get(),
+            "anthropic_api_key": self.setting_vars.get("anthropic_api_key", tk.StringVar()).get(),
         }
         self.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
         self.SETTINGS_FILE.write_text(json.dumps(prefs, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -536,7 +787,7 @@ class OshmsApp:
         new_theme = prefs["theme"]
         if new_theme != self.theme:
             self.theme = new_theme
-            self.colors = self.THEME_COLORS[new_theme]
+            self.c = self.THEME_COLORS[new_theme]
             self._apply_theme()
 
         messagebox.showinfo("설정", "설정이 저장되었습니다.")
@@ -551,7 +802,6 @@ class OshmsApp:
     # ─────────────────── 대시보드 ───────────────────
 
     def _get_market_code(self) -> str:
-        """시장 표시 문자열에서 코드를 추출한다."""
         display = self.market_var.get()
         for code, name in self.MARKETS.items():
             if display == name:
@@ -569,18 +819,15 @@ class OshmsApp:
                 from api.kis_api import KISApi
                 api = KISApi(self.settings)
 
-                # 국내 잔고
                 balance = api.get_balance()
                 kr_holdings = balance.get("holdings", [])
                 for h in kr_holdings:
                     h["market"] = "KR"
 
-                # 해외 잔고
                 try:
                     overseas = api.get_overseas_balance()
                     os_holdings = overseas.get("holdings", [])
                     kr_holdings.extend(os_holdings)
-                    # 해외 자산을 합산
                     kr_summary = balance.get("summary", {})
                     os_summary = overseas.get("summary", {})
                     kr_summary["total_profit_loss"] = (
@@ -610,13 +857,14 @@ class OshmsApp:
         self.card_labels["total_asset"].config(text=f"{total_eval + cash:,.0f} 원")
         self.card_labels["total_profit"].config(
             text=f"{total_pl:+,.0f} 원",
-            fg=self.colors["green"] if total_pl >= 0 else self.colors["red"],
+            fg=self.c["green"] if total_pl >= 0 else self.c["red"],
         )
         self.card_labels["profit_rate"].config(
             text=f"{rate:+.2f}%",
-            fg=self.colors["green"] if rate >= 0 else self.colors["red"],
+            fg=self.c["green"] if rate >= 0 else self.c["red"],
         )
         self.card_labels["hold_count"].config(text=f"{len(holdings)} 개")
+        self.holdings_count_lbl.config(text=f"{len(holdings)} 종목")
 
         for item in self.holdings_tree.get_children():
             self.holdings_tree.delete(item)
@@ -628,25 +876,22 @@ class OshmsApp:
                 f"{h['profit_loss']:+,.0f}", f"{h['profit_rate']:+.2f}%",
             ))
 
-        # 거래 내역 갱신
         self._load_trade_history()
 
-        # 누적 통계 갱신
         if self._state_mgr:
             stats = self._state_mgr.get_stats_summary()
             if stats["total_trades"] > 0:
                 self.stat_labels["cum_trades"].config(text=f"{stats['total_trades']} 건")
                 self.stat_labels["cum_wins"].config(
                     text=f"{stats['win_rate']:.1f}%",
-                    fg=self.colors["green"] if stats["win_rate"] >= 50 else self.colors["red"],
+                    fg=self.c["green"] if stats["win_rate"] >= 50 else self.c["red"],
                 )
                 self.stat_labels["cum_profit"].config(
                     text=f"{stats['total_profit']:+,.0f} 원",
-                    fg=self.colors["green"] if stats["total_profit"] >= 0 else self.colors["red"],
+                    fg=self.c["green"] if stats["total_profit"] >= 0 else self.c["red"],
                 )
 
     def _auto_refresh(self):
-        """매매 중 자동 갱신."""
         if self._is_trading and self.auto_refresh_var.get():
             self._refresh_balance()
         if self._is_trading:
@@ -658,25 +903,22 @@ class OshmsApp:
         return self._get_market_code()
 
     def _resume_trading(self):
-        """이전 세션을 이어서 실행한다."""
         if not self._state_mgr:
             return
         info = self._state_mgr.get_resume_info()
         self.strategy_var.set(info["strategy"])
         self.interval_var.set(str(info["interval"]))
 
-        # 시장 설정
         market = info.get("market", "KR")
         if market in self.MARKETS:
             self.market_var.set(self.MARKETS[market])
 
-        # 종목 설정
         stocks = info.get("target_stocks", [])
         if stocks:
             self.stocks_entry.delete(0, tk.END)
             self.stocks_entry.insert(0, ",".join(stocks))
 
-        self.notebook.select(1)  # 자동매매 탭으로 이동
+        self.notebook.select(1)
         self._log(f"이전 세션 복원: {info['strategy']} ({market}) | 누적 수익: {info['total_profit']:+,.0f}원")
         self._start_trading()
 
@@ -689,12 +931,12 @@ class OshmsApp:
         self._is_trading = True
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
-        self.status_label.config(text="매매 실행 중", fg=self.colors["green"])
+        self.status_label.config(text="매매중", fg=self.c["green"])
+        self.status_dot.config(fg=self.c["green"])
 
         self._trading_thread = threading.Thread(target=self._trading_loop, daemon=True)
         self._trading_thread.start()
 
-        # 자동 갱신 시작
         self._auto_refresh_id = self.root.after(30000, self._auto_refresh)
 
     def _stop_trading(self):
@@ -706,10 +948,9 @@ class OshmsApp:
             self._auto_refresh_id = None
         self.start_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
-        self.status_label.config(text="대기 중", fg=self.colors["fg"])
+        self.status_label.config(text="대기중", fg=self.c["fg"])
+        self.status_dot.config(fg=self.c["dim"])
         self._log("자동매매 중지됨")
-
-        # 대시보드 최종 갱신
         self._refresh_balance()
 
     def _trading_loop(self):
@@ -758,12 +999,10 @@ class OshmsApp:
             interval = int(self.interval_var.get())
             market = self._get_selected_market()
 
-            # 상태 저장
             if not self._state_mgr:
                 self._state_mgr = StateManager()
             self._state_mgr.start_session(name, target or [], interval, market)
 
-            # 진화 세대 표시
             gen = self._state_mgr.state.evolution_generation
             self.root.after(0, lambda: self.evo_label.config(text=f"진화 #{gen}"))
 
@@ -778,7 +1017,6 @@ class OshmsApp:
     def _log(self, message: str):
         self.log_text.insert(tk.END, message + "\n")
         self.log_text.see(tk.END)
-        # 로그가 너무 길면 오래된 것 삭제
         lines = int(self.log_text.index("end-1c").split(".")[0])
         if lines > 500:
             self.log_text.delete("1.0", f"{lines - 400}.0")
@@ -800,7 +1038,7 @@ class OshmsApp:
             return
 
         self.analysis_text.delete("1.0", tk.END)
-        self.analysis_text.insert(tk.END, f"[{market}] {name}({code}) 분석 중...\n")
+        self.analysis_text.insert(tk.END, f"[{market}] {name}({code}) AI 분석 중...\n")
 
         def _analyze():
             try:
@@ -818,7 +1056,6 @@ class OshmsApp:
                 except Exception:
                     pass
 
-                # 시장에 따라 다른 API 호출
                 if market == "KR":
                     current_price = api.get_current_price(code)
                     candles = api.get_minute_chart(code, period="3")
@@ -869,6 +1106,16 @@ class OshmsApp:
                     result += "\n\n── 최신 뉴스 ──"
                     for h in analysis.sentiment.key_headlines:
                         result += f"\n  {h}"
+
+                # AI 분석 리포트
+                try:
+                    from strategy.ai_analyst import AIAnalyst
+                    ai = AIAnalyst(api_key=self.settings.openai_api_key)
+                    ai_data = AIAnalyst.extract_analysis_data(analysis)
+                    ai_result = ai.analyze(ai_data)
+                    result += "\n\n" + ai_result.format_report()
+                except Exception as ai_err:
+                    result += f"\n\nAI 분석: {ai_err}"
 
                 self.root.after(0, lambda: (
                     self.analysis_text.delete("1.0", tk.END),
