@@ -90,6 +90,8 @@ class OshmsApp:
         self._auto_refresh_id = None
         self._state_mgr = None
         self._evolution = None
+        self._analysis_cancel = threading.Event()
+        self._analysis_thread = None
 
         self._build_ui()
         self._apply_theme()
@@ -380,7 +382,14 @@ class OshmsApp:
             font=("Helvetica", 10, "bold"), relief=tk.FLAT, padx=14, pady=4,
             cursor="hand2",
         )
-        self.analyze_btn.pack(side=tk.LEFT, padx=10)
+        self.analyze_btn.pack(side=tk.LEFT, padx=(10, 4))
+
+        self.analyze_stop_btn = tk.Button(
+            search_row, text="  중지  ", command=self._stop_analysis,
+            font=("Helvetica", 10), relief=tk.FLAT, padx=10, pady=4,
+            cursor="hand2", state=tk.DISABLED,
+        )
+        self.analyze_stop_btn.pack(side=tk.LEFT, padx=(0, 6))
 
         # 힌트
         hint = tk.Label(
@@ -624,6 +633,10 @@ class OshmsApp:
         if hasattr(self, 'analyze_btn'):
             self.analyze_btn.configure(bg=c["accent2"], fg="#ffffff",
                                        activebackground=c["accent2"], activeforeground="#ffffff")
+        if hasattr(self, 'analyze_stop_btn'):
+            self.analyze_stop_btn.configure(bg=c["red"], fg="#ffffff",
+                                            activebackground=c["red"], activeforeground="#ffffff",
+                                            disabledforeground=c["dim"])
         if hasattr(self, 'validate_btn'):
             self.validate_btn.configure(bg=c["button"], fg=c["fg"],
                                         activebackground=c["button"])
@@ -1039,14 +1052,26 @@ class OshmsApp:
             messagebox.showwarning("오류", "먼저 설정에서 API 키를 입력하세요.")
             return
 
+        self._analysis_cancel.clear()
+        self.analyze_btn.config(state=tk.DISABLED)
+        self.analyze_stop_btn.config(state=tk.NORMAL)
         self.analysis_text.delete("1.0", tk.END)
         self.analysis_text.insert(tk.END, f"[{market}] {name}({code}) AI 분석 중...\n")
+
+        cancel = self._analysis_cancel
+
+        def _on_done():
+            self.analyze_btn.config(state=tk.NORMAL)
+            self.analyze_stop_btn.config(state=tk.DISABLED)
 
         def _analyze():
             try:
                 from api.kis_api import KISApi
                 from strategy.expert import ExpertStrategy
                 from strategy.market_context import MarketContextAnalyzer
+
+                if cancel.is_set():
+                    return
 
                 self.settings = Settings.from_env()
                 api = KISApi(self.settings)
@@ -1057,6 +1082,9 @@ class OshmsApp:
                     strategy.set_market_context(ctx)
                 except Exception:
                     pass
+
+                if cancel.is_set():
+                    return
 
                 if market == "KR":
                     current_price = api.get_current_price(code)
@@ -1080,6 +1108,9 @@ class OshmsApp:
                     }
                     candles = api.get_overseas_daily_chart(market, code, count=60)
 
+                if cancel.is_set():
+                    return
+
                 if not current_price:
                     self.root.after(0, lambda: self.analysis_text.insert(tk.END, "시세 조회 실패\n"))
                     return
@@ -1091,6 +1122,10 @@ class OshmsApp:
                     return
 
                 analysis = strategy.full_analysis(code, name, candles, current_price)
+
+                if cancel.is_set():
+                    return
+
                 result = f"[시장: {market}]\n" + analysis.summary()
 
                 # 기술적 지표
@@ -1109,6 +1144,9 @@ class OshmsApp:
                     for h in analysis.sentiment.key_headlines:
                         result += f"\n  {h}"
 
+                if cancel.is_set():
+                    return
+
                 # AI 분석 리포트
                 try:
                     from strategy.ai_analyst import AIAnalyst
@@ -1119,12 +1157,26 @@ class OshmsApp:
                 except Exception as ai_err:
                     result += f"\n\nAI 분석: {ai_err}"
 
+                if cancel.is_set():
+                    return
+
                 self.root.after(0, lambda: (
                     self.analysis_text.delete("1.0", tk.END),
                     self.analysis_text.insert(tk.END, result),
                 ))
             except Exception as e:
                 err_msg = str(e)
-                self.root.after(0, lambda: self.analysis_text.insert(tk.END, f"\n오류: {err_msg}\n"))
+                if not cancel.is_set():
+                    self.root.after(0, lambda: self.analysis_text.insert(tk.END, f"\n오류: {err_msg}\n"))
+            finally:
+                self.root.after(0, _on_done)
 
-        threading.Thread(target=_analyze, daemon=True).start()
+        self._analysis_thread = threading.Thread(target=_analyze, daemon=True)
+        self._analysis_thread.start()
+
+    def _stop_analysis(self):
+        """진행 중인 분석을 중지한다."""
+        self._analysis_cancel.set()
+        self.analyze_btn.config(state=tk.NORMAL)
+        self.analyze_stop_btn.config(state=tk.DISABLED)
+        self.analysis_text.insert(tk.END, "\n── 분석이 중지되었습니다 ──\n")
