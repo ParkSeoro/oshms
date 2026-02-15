@@ -256,7 +256,7 @@ class KISApi:
     def _place_order(
         self, stock_code: str, quantity: int, order_type: str, price: int
     ) -> dict[str, Any]:
-        """주문을 실행한다."""
+        """주문을 실행한다. 서버 오류 시 최대 3회 재시도."""
         is_buy = order_type == "buy"
 
         if self.settings.is_mock:
@@ -277,24 +277,34 @@ class KISApi:
             "ORD_UNPR": str(price),
         }
 
-        hashkey = self._get_hashkey(body)
-        headers = self._headers(tr_id, hashkey=hashkey)
-
-        resp = self.session.post(url, json=body, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-
         side = "매수" if is_buy else "매도"
-        if data.get("rt_cd") == "0":
-            order_no = data.get("output", {}).get("ODNO", "N/A")
-            logger.info(
-                "%s 주문 성공: %s %d주 (주문번호: %s)", side, stock_code, quantity, order_no
-            )
-            return {"success": True, "order_no": order_no, "data": data.get("output", {})}
-        else:
-            msg = data.get("msg1", "알 수 없는 오류")
-            logger.error("%s 주문 실패: %s - %s", side, stock_code, msg)
-            return {"success": False, "message": msg}
+
+        for attempt in range(3):
+            try:
+                hashkey = self._get_hashkey(body)
+                headers = self._headers(tr_id, hashkey=hashkey)
+
+                resp = self.session.post(url, json=body, headers=headers, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+
+                if data.get("rt_cd") == "0":
+                    order_no = data.get("output", {}).get("ODNO", "N/A")
+                    logger.info(
+                        "%s 주문 성공: %s %d주 (주문번호: %s)", side, stock_code, quantity, order_no
+                    )
+                    return {"success": True, "order_no": order_no, "data": data.get("output", {})}
+                else:
+                    msg = data.get("msg1", "알 수 없는 오류")
+                    logger.error("%s 주문 실패: %s - %s", side, stock_code, msg)
+                    return {"success": False, "message": msg}
+            except Exception as e:
+                logger.warning("%s 주문 오류 (시도 %d/3): %s - %s", side, attempt + 1, stock_code, e)
+                if attempt < 2:
+                    time.sleep(2 * (attempt + 1))
+
+        logger.error("%s 주문 최종 실패: %s (3회 재시도 초과)", side, stock_code)
+        return {"success": False, "message": "서버 오류 (재시도 초과)"}
 
     # ──────────────────────────────────────────────
     # 잔고 조회
@@ -522,7 +532,7 @@ class KISApi:
     def _place_overseas_order(
         self, market: str, stock_code: str, quantity: int, order_type: str, price: float
     ) -> dict[str, Any]:
-        """해외 주식 주문을 실행한다."""
+        """해외 주식 주문을 실행한다. 서버 오류 시 최대 3회 재시도."""
         is_buy = order_type == "buy"
 
         if self.settings.is_mock:
@@ -541,25 +551,35 @@ class KISApi:
             "ORD_SVR_DVSN_CD": "0",
         }
 
-        hashkey = self._get_hashkey(body)
-        headers = self._headers(tr_id, hashkey=hashkey)
-
-        resp = self.session.post(url, json=body, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-
         side = "해외매수" if is_buy else "해외매도"
-        if data.get("rt_cd") == "0":
-            order_no = data.get("output", {}).get("ODNO", "N/A")
-            logger.info(
-                "%s 주문 성공: %s/%s %d주 @%.2f (주문번호: %s)",
-                side, market, stock_code, quantity, price, order_no,
-            )
-            return {"success": True, "order_no": order_no, "data": data.get("output", {})}
-        else:
-            msg = data.get("msg1", "알 수 없는 오류")
-            logger.error("%s 주문 실패: %s/%s - %s", side, market, stock_code, msg)
-            return {"success": False, "message": msg}
+
+        for attempt in range(3):
+            try:
+                hashkey = self._get_hashkey(body)
+                headers = self._headers(tr_id, hashkey=hashkey)
+
+                resp = self.session.post(url, json=body, headers=headers, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+
+                if data.get("rt_cd") == "0":
+                    order_no = data.get("output", {}).get("ODNO", "N/A")
+                    logger.info(
+                        "%s 주문 성공: %s/%s %d주 @%.2f (주문번호: %s)",
+                        side, market, stock_code, quantity, price, order_no,
+                    )
+                    return {"success": True, "order_no": order_no, "data": data.get("output", {})}
+                else:
+                    msg = data.get("msg1", "알 수 없는 오류")
+                    logger.error("%s 주문 실패: %s/%s - %s", side, market, stock_code, msg)
+                    return {"success": False, "message": msg}
+            except Exception as e:
+                logger.warning("%s 주문 오류 (시도 %d/3): %s/%s - %s", side, attempt + 1, market, stock_code, e)
+                if attempt < 2:
+                    time.sleep(2 * (attempt + 1))
+
+        logger.error("%s 주문 최종 실패: %s/%s (3회 재시도 초과)", side, market, stock_code)
+        return {"success": False, "message": "서버 오류 (재시도 초과)"}
 
     # ──────────────────────────────────────────────
     # 해외 주식 잔고 조회

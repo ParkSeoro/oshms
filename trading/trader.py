@@ -164,15 +164,24 @@ class AutoTrader:
         """리스크 관리: 손절, 익절, 트레일링 스탑을 확인한다."""
         # 손절
         for code in self.order_manager.check_stop_loss():
-            self.order_manager.execute_sell(code, "손절")
+            try:
+                self.order_manager.execute_sell(code, "손절")
+            except Exception as e:
+                logger.error("[%s] 손절 매도 실패: %s", code, e)
 
         # 익절
         for code in self.order_manager.check_take_profit():
-            self.order_manager.execute_sell(code, "익절")
+            try:
+                self.order_manager.execute_sell(code, "익절")
+            except Exception as e:
+                logger.error("[%s] 익절 매도 실패: %s", code, e)
 
         # 트레일링 스탑
         for code in self.order_manager.check_trailing_stop():
-            self.order_manager.execute_sell(code, "트레일링스탑")
+            try:
+                self.order_manager.execute_sell(code, "트레일링스탑")
+            except Exception as e:
+                logger.error("[%s] 트레일링스탑 매도 실패: %s", code, e)
 
     def _analyze_and_trade(self, stock_code: str) -> None:
         """종목을 분석하고 매매를 실행한다."""
