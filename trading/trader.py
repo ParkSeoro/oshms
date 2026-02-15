@@ -39,7 +39,11 @@ class AutoTrader:
             strategy.market_analyzer = self._market_analyzer
 
     def is_trading_time(self) -> bool:
-        """현재 시간이 매매 가능 시간인지 확인한다."""
+        """현재 시간이 매매 가능 시간인지 확인한다.
+
+        장 마감 10분 전(15:10~15:20) 이후에는 신규 매매를 하지 않는다.
+        (보유 중인 종목의 손절/익절은 계속 작동)
+        """
         now = datetime.now().strftime("%H:%M")
         return self.settings.trading_start_time <= now <= self.settings.trading_end_time
 
@@ -122,14 +126,20 @@ class AutoTrader:
             logger.warning("시장 컨텍스트 갱신 실패: %s", e)
 
     def _select_stocks(self) -> list[str]:
-        """거래량 상위 종목을 자동 선정한다."""
+        """거래량 상위 종목을 자동 선정한다.
+
+        급등/급락주와 저가주를 제외하고 안정적인 거래 대상을 선정한다.
+        """
         try:
-            rank = self.api.get_volume_rank(count=10)
-            # 변동률이 ±15% 이내인 종목만 (급등/급락주 제외)
+            rank = self.api.get_volume_rank(count=20)
             filtered = [
                 s["stock_code"]
                 for s in rank
-                if -15 < s.get("change_rate", 0) < 15 and s.get("price", 0) > 1000
+                if (
+                    -8 < s.get("change_rate", 0) < 10  # 급등/급락 제외 (비대칭: 상승은 더 허용)
+                    and s.get("price", 0) > 2000  # 2,000원 미만 저가주 제외
+                    and s.get("price", 0) < 500000  # 50만원 초과 고가주 제외 (슬리피지)
+                )
             ]
             return filtered[:10]
         except Exception as e:
@@ -198,7 +208,9 @@ class AutoTrader:
         if not candles:
             return
 
-        # Expert 모드: 상세 분석 로그
+        # Expert 모드 분석 데이터 (ATR 등)
+        analysis = None
+        atr_value = 0.0
         if isinstance(self.strategy, ExpertStrategy):
             analysis = self.strategy.full_analysis(
                 stock_code,
@@ -206,10 +218,11 @@ class AutoTrader:
                 candles,
                 current_price,
             )
+            if analysis.technical:
+                atr_value = analysis.technical.atr
             if analysis.decision != "HOLD":
                 logger.info("\n%s", analysis.summary())
             elif self._cycle_count % 5 == 1:
-                # 5사이클마다 HOLD 종목도 간략히 로그
                 logger.info(
                     "[%s] %s원 | 점수=%.3f 신뢰도=%.0f%% → HOLD",
                     current_price.get("stock_name", stock_code),
@@ -238,7 +251,8 @@ class AutoTrader:
             min_strength = 0.20 if isinstance(self.strategy, ExpertStrategy) else 0.3
             if signal.strength >= min_strength:
                 self.order_manager.execute_buy(
-                    stock_code, stock_name, current_price["price"], signal.reason
+                    stock_code, stock_name, current_price["price"], signal.reason,
+                    strength=signal.strength, atr=atr_value,
                 )
             else:
                 logger.debug(
@@ -255,11 +269,12 @@ class AutoTrader:
                     pos.profit_rate, signal.strength, signal.reason,
                 )
 
-                if signal.strength >= 0.15:
+                # 매도는 더 민감하게 (손실 최소화)
+                if signal.strength >= 0.12:
                     self.order_manager.execute_sell(stock_code, signal.reason)
                 else:
                     logger.debug(
-                        "  → 매도 신호 강도 부족: %.2f < 0.15 (패스)", signal.strength,
+                        "  → 매도 신호 강도 부족: %.2f < 0.12 (패스)", signal.strength,
                     )
 
     def _log_status(self) -> None:

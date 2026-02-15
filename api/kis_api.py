@@ -262,7 +262,7 @@ class KISApi:
         if self.settings.is_mock:
             tr_id = "VTTC0802U" if is_buy else "VTTC0801U"
         else:
-            tr_id = "TTTC0802U" if is_buy else "TTTC0311U"
+            tr_id = "TTTC0802U" if is_buy else "TTTC0801U"
 
         # 시장가(01) vs 지정가(00)
         ord_dvsn = "01" if price == 0 else "00"

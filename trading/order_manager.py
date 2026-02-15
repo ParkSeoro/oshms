@@ -28,6 +28,8 @@ class Position:
     buy_reason: str
     current_price: int = 0
     highest_price: int = 0  # 매수 후 최고가 (트레일링 스탑용)
+    signal_strength: float = 0.0  # 매수 시 신호 강도
+    atr_at_buy: float = 0.0  # 매수 시 ATR (동적 리스크 관리용)
 
     @property
     def profit_rate(self) -> float:
@@ -104,6 +106,8 @@ class OrderManager:
                     h["current_price"],
                     existing.highest_price if existing else 0,
                 ),
+                signal_strength=existing.signal_strength if existing else 0.0,
+                atr_at_buy=existing.atr_at_buy if existing else 0.0,
             )
         self.positions = synced
         logger.info("포지션 동기화 완료: %d종목", len(self.positions))
@@ -123,13 +127,25 @@ class OrderManager:
         """매수 가능 여부를 확인한다."""
         return len(self.positions) < self.settings.max_hold_count
 
-    def calc_buy_quantity(self, price: int) -> int:
-        """매수 수량을 계산한다."""
+    def calc_buy_quantity(self, price: int, strength: float = 1.0) -> int:
+        """매수 수량을 계산한다.
+
+        신호 강도에 따라 투자 금액을 조절한다.
+        - 강한 신호 (>0.7): 최대 금액의 100%
+        - 보통 신호 (0.4~0.7): 최대 금액의 70%
+        - 약한 신호 (<0.4): 최대 금액의 50%
+        """
         if price <= 0:
             return 0
-        return self.settings.max_buy_amount // price
+        # 신호 강도에 따른 투자 비율 (50% ~ 100%)
+        invest_ratio = min(1.0, max(0.5, 0.3 + strength))
+        effective_amount = int(self.settings.max_buy_amount * invest_ratio)
+        return effective_amount // price
 
-    def execute_buy(self, stock_code: str, stock_name: str, price: int, reason: str) -> bool:
+    def execute_buy(
+        self, stock_code: str, stock_name: str, price: int, reason: str,
+        strength: float = 0.5, atr: float = 0.0,
+    ) -> bool:
         """매수를 실행한다."""
         if not self.can_buy():
             logger.warning("최대 보유 종목 수 초과 (%d종목)", self.settings.max_hold_count)
@@ -139,7 +155,7 @@ class OrderManager:
             logger.warning("[%s] 이미 보유 중인 종목", stock_code)
             return False
 
-        quantity = self.calc_buy_quantity(price)
+        quantity = self.calc_buy_quantity(price, strength)
         if quantity <= 0:
             logger.warning("[%s] 매수 수량 0: 가격=%d, 최대금액=%d", stock_code, price, self.settings.max_buy_amount)
             return False
@@ -158,6 +174,8 @@ class OrderManager:
             buy_reason=reason,
             current_price=price,
             highest_price=price,
+            signal_strength=strength,
+            atr_at_buy=atr,
         )
 
         # 거래 기록
@@ -220,14 +238,26 @@ class OrderManager:
         return True
 
     def check_stop_loss(self) -> list[str]:
-        """손절 조건을 확인하여 매도 대상 종목을 반환한다."""
+        """손절 조건을 확인하여 매도 대상 종목을 반환한다.
+
+        ATR 기반 동적 손절: ATR이 있으면 ATR의 2배를 손절선으로 사용.
+        없으면 설정의 고정 손절률 사용.
+        """
         targets = []
         for code, pos in self.positions.items():
-            if pos.profit_rate <= self.settings.stop_loss_pct:
+            # ATR 기반 동적 손절
+            if pos.atr_at_buy > 0 and pos.avg_price > 0:
+                dynamic_stop_pct = -(pos.atr_at_buy * 2 / pos.avg_price * 100)
+                # 최소 -1.5%, 최대 설정값
+                stop_pct = max(self.settings.stop_loss_pct, min(-1.5, dynamic_stop_pct))
+            else:
+                stop_pct = self.settings.stop_loss_pct
+
+            if pos.profit_rate <= stop_pct:
                 targets.append(code)
                 logger.warning(
                     "⚠ 손절 대상: %s(%s) 수익률=%.2f%% (기준: %.1f%%)",
-                    pos.stock_name, code, pos.profit_rate, self.settings.stop_loss_pct,
+                    pos.stock_name, code, pos.profit_rate, stop_pct,
                 )
         return targets
 
@@ -246,18 +276,33 @@ class OrderManager:
     def check_trailing_stop(self, trail_pct: float = 1.5) -> list[str]:
         """트레일링 스탑 조건을 확인한다.
 
-        최고점 대비 trail_pct% 이상 하락하면 매도.
+        수익률 구간별 차등 적용:
+        - 수익 1~3%: 최고가 대비 1.5% 하락 시 매도 (수익 보호)
+        - 수익 3~5%: 최고가 대비 2.0% 하락 시 매도 (약간 여유)
+        - 수익 5%+:  최고가 대비 2.5% 하락 시 매도 (큰 수익 보호하되 여유)
         """
         targets = []
         for code, pos in self.positions.items():
             if pos.highest_price <= 0:
                 continue
+            if pos.profit_rate <= 0:
+                continue  # 수익 중인 종목만
+
+            # 수익률 구간별 트레일링 퍼센트 조정
+            if pos.profit_rate >= 5.0:
+                effective_trail = 2.5
+            elif pos.profit_rate >= 3.0:
+                effective_trail = 2.0
+            else:
+                effective_trail = trail_pct  # 기본 1.5%
+
             drop_from_high = ((pos.highest_price - pos.current_price) / pos.highest_price) * 100
-            if drop_from_high >= trail_pct and pos.profit_rate > 0:
+            if drop_from_high >= effective_trail:
                 targets.append(code)
                 logger.info(
-                    "트레일링스탑: %s(%s) 최고가=%s 현재=%s 하락=%.1f%%",
+                    "트레일링스탑: %s(%s) 최고가=%s 현재=%s 하락=%.1f%% (기준=%.1f%%)",
                     pos.stock_name, code,
-                    f"{pos.highest_price:,}", f"{pos.current_price:,}", drop_from_high,
+                    f"{pos.highest_price:,}", f"{pos.current_price:,}",
+                    drop_from_high, effective_trail,
                 )
         return targets

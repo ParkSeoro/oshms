@@ -80,20 +80,20 @@ class ExpertStrategy(BaseStrategy):
 
     name = "expert"
 
-    # 분석 가중치
+    # 분석 가중치 (기술적 분석 비중 상향, 뉴스 비중 하향 - 뉴스는 지연되므로)
     WEIGHTS = {
-        "technical": 0.35,
+        "technical": 0.40,
         "pattern": 0.15,
-        "sentiment": 0.20,
+        "sentiment": 0.10,
         "market": 0.15,
-        "price_level": 0.15,
+        "price_level": 0.20,
     }
 
-    # 매매 임계값 (실전 매매를 위해 현실적 수준으로 설정)
-    STRONG_BUY_THRESHOLD = 0.30
-    BUY_THRESHOLD = 0.12
-    SELL_THRESHOLD = -0.10
-    STRONG_SELL_THRESHOLD = -0.25
+    # 매매 임계값 (보수적 진입, 빠른 손절)
+    STRONG_BUY_THRESHOLD = 0.25
+    BUY_THRESHOLD = 0.15
+    SELL_THRESHOLD = -0.08
+    STRONG_SELL_THRESHOLD = -0.20
 
     def __init__(self, api: KISApi | None = None, settings: Settings | None = None):
         self.technical = TechnicalAnalyzer()
@@ -191,44 +191,67 @@ class ExpertStrategy(BaseStrategy):
     # ─────────── 점수 계산 ───────────
 
     def _calc_technical_composite(self, snap: TechnicalSnapshot) -> float:
-        """기술적 지표 종합 점수."""
-        # 추세(40%) + 모멘텀(30%) + 거래량(20%) + 변동성 영향(10%)
-        trend_weight = 0.4
-        momentum_weight = 0.3
-        volume_weight = 0.2
-        volatility_weight = 0.1
+        """기술적 지표 종합 점수.
 
-        # 모멘텀 반전: 과매도면 매수 기회 → 점수를 반전
-        # RSI 30 이하 = 매수기회, RSI 70 이상 = 매도기회
-        momentum_adjusted = -snap.momentum_score  # 역발상
+        추세 추종 + 역발상을 상황에 맞게 결합한다.
+        - 강한 추세: 추세를 따른다 (모멘텀 순방향)
+        - 약한 추세/횡보: 역발상 (과매도 매수, 과매수 매도)
+        """
+        trend_weight = 0.40
+        momentum_weight = 0.25
+        volume_weight = 0.25
+        volatility_weight = 0.10
 
-        # 변동성이 높으면 신호 감쇠
-        volatility_factor = 1.0 - snap.volatility_score * 0.3
+        # 추세 강도에 따라 모멘텀 방향 결정
+        trend_strength = abs(snap.trend_score)
+        if trend_strength > 0.6:
+            # 강한 추세: 추세를 따라간다 (모멘텀 순방향)
+            momentum_adjusted = snap.momentum_score * 0.5
+        elif trend_strength < 0.2:
+            # 횡보: 역발상 (과매도 매수, 과매수 매도)
+            momentum_adjusted = -snap.momentum_score
+        else:
+            # 중간: 약한 역발상
+            momentum_adjusted = -snap.momentum_score * 0.5
+
+        # 변동성이 높으면 신호 감쇠 (but 약간만)
+        volatility_factor = 1.0 - snap.volatility_score * 0.2
+
+        # 거래량 확인: OBV와 추세가 같은 방향이면 보너스
+        volume_adjusted = snap.volume_score
+        if (snap.trend_score > 0 and snap.obv_trend == "up") or \
+           (snap.trend_score < 0 and snap.obv_trend == "down"):
+            volume_adjusted *= 1.3  # 추세-거래량 일치 보너스
 
         score = (
             snap.trend_score * trend_weight
             + momentum_adjusted * momentum_weight
-            + snap.volume_score * volume_weight
+            + volume_adjusted * volume_weight
         ) * volatility_factor
 
-        # 특수 상황 보너스
-        # MACD 골든크로스
+        # 특수 상황 보너스 (크로스 시그널)
         if snap.macd_cross == "golden":
-            score += 0.15
+            score += 0.18
         elif snap.macd_cross == "dead":
-            score -= 0.15
+            score -= 0.18
 
-        # 스토캐스틱 반전
         if snap.stoch_cross == "golden":
-            score += 0.1
+            score += 0.12
         elif snap.stoch_cross == "dead":
-            score -= 0.1
+            score -= 0.12
 
         # 일목균형표 강한 신호
         if snap.ichimoku_signal == "strong_buy":
-            score += 0.1
+            score += 0.12
         elif snap.ichimoku_signal == "strong_sell":
-            score -= 0.1
+            score -= 0.12
+
+        # 거래량 급증 + 추세 방향 일치 = 강한 추가 보너스
+        if snap.volume_ratio > 2.5:
+            if snap.trend_score > 0.3:
+                score += 0.10  # 상승 + 거래량 폭증
+            elif snap.trend_score < -0.3:
+                score -= 0.10  # 하락 + 거래량 폭증
 
         return max(-1.0, min(1.0, score))
 
@@ -305,11 +328,11 @@ class ExpertStrategy(BaseStrategy):
         else:
             agreement_ratio = 0
 
-        # 점수 크기
-        magnitude = abs(result.total_score)
+        # 점수 크기 (절대값이 클수록 확신 높음)
+        magnitude = min(abs(result.total_score) * 1.5, 1.0)
 
         # 데이터 충분성
-        data_quality = 0.4
+        data_quality = 0.35
         if result.technical and result.technical.sma_60 > 0:
             data_quality += 0.25
         if result.patterns:
@@ -319,7 +342,24 @@ class ExpertStrategy(BaseStrategy):
         if result.market_ctx:
             data_quality += 0.1
 
-        confidence = agreement_ratio * 0.4 + magnitude * 0.3 + data_quality * 0.3
+        # 거래량 확인 보너스 (거래량이 평균 이상이면 신뢰도 상승)
+        volume_bonus = 0
+        if result.technical and result.technical.volume_ratio > 1.5:
+            volume_bonus = 0.10
+        elif result.technical and result.technical.volume_ratio > 1.2:
+            volume_bonus = 0.05
+
+        confidence = (
+            agreement_ratio * 0.40
+            + magnitude * 0.25
+            + data_quality * 0.25
+            + volume_bonus
+        )
+        # 핵심 지표(기술+가격위치) 모두 같은 방향이면 추가 보너스
+        if result.technical_score * result.price_level_score > 0 and \
+           abs(result.technical_score) > 0.1 and abs(result.price_level_score) > 0.1:
+            confidence += 0.10
+
         return min(1.0, confidence)
 
     def _make_decision(self, result: ExpertAnalysis) -> str:
@@ -332,20 +372,33 @@ class ExpertStrategy(BaseStrategy):
         sell_adj = 0
         if result.market_ctx:
             if result.market_ctx.regime == "trending_down":
-                buy_adj = 0.1  # 하락장에서 매수 기준 상향
+                buy_adj = 0.12  # 하락장에서 매수 기준 대폭 상향
+                sell_adj = -0.05  # 매도는 빠르게
             elif result.market_ctx.regime == "volatile":
-                buy_adj = 0.05
-                sell_adj = -0.05
+                buy_adj = 0.08  # 변동성 장에서 매수 기준 상향
+                sell_adj = -0.03
+            elif result.market_ctx.regime == "trending_up":
+                buy_adj = -0.03  # 상승장에서 매수 기준 약간 하향
             if not result.market_ctx.trading_ok:
                 return "HOLD"
 
+        # 거래량 미달 시 매수 보류 (거래량 < 평균 0.8배면 유동성 부족)
+        if result.technical and result.technical.volume_ratio < 0.8:
+            if score > 0:
+                return "HOLD"  # 매수 신호지만 거래량 부족
+
+        # 장 시작 직후(09:00~09:15) 변동성 구간 매수 제한
+        now_str = datetime.now().strftime("%H:%M")
+        if "09:00" <= now_str <= "09:15" and score > 0:
+            buy_adj += 0.10  # 장 초반엔 더 높은 기준 적용
+
         if score >= self.STRONG_BUY_THRESHOLD + buy_adj and confidence >= 0.35:
             return "STRONG_BUY"
-        elif score >= self.BUY_THRESHOLD + buy_adj and confidence >= 0.20:
+        elif score >= self.BUY_THRESHOLD + buy_adj and confidence >= 0.25:
             return "BUY"
-        elif score <= self.STRONG_SELL_THRESHOLD + sell_adj and confidence >= 0.30:
+        elif score <= self.STRONG_SELL_THRESHOLD + sell_adj and confidence >= 0.25:
             return "STRONG_SELL"
-        elif score <= self.SELL_THRESHOLD + sell_adj and confidence >= 0.20:
+        elif score <= self.SELL_THRESHOLD + sell_adj and confidence >= 0.15:
             return "SELL"
         return "HOLD"
 
