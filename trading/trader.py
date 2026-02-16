@@ -34,6 +34,10 @@ class AutoTrader:
         self._market_ctx: MarketContext | None = None
         self._market_ctx_updated: float = 0
 
+        # 손절 후 재매수 방지 (종목코드 → 쿨다운 만료 시각)
+        self._cooldown_stocks: dict[str, float] = {}
+        self._COOLDOWN_SECONDS = 600  # 10분 쿨다운
+
         if isinstance(strategy, ExpertStrategy):
             self._market_analyzer = MarketContextAnalyzer(api)
             strategy.market_analyzer = self._market_analyzer
@@ -171,13 +175,23 @@ class AutoTrader:
             self._log_status()
 
     def _check_risk_management(self) -> None:
-        """리스크 관리: 손절, 익절, 트레일링 스탑을 확인한다."""
-        # 손절
+        """리스크 관리: 손절, 익절, 트레일링 스탑, 장마감 청산을 확인한다."""
+        # 손절 (최우선)
         for code in self.order_manager.check_stop_loss():
             try:
                 self.order_manager.execute_sell(code, "손절")
+                # 손절한 종목은 쿨다운 등록 (재매수 방지)
+                self._cooldown_stocks[code] = time.time() + self._COOLDOWN_SECONDS
+                logger.info("[%s] 쿨다운 등록: %d초간 재매수 금지", code, self._COOLDOWN_SECONDS)
             except Exception as e:
                 logger.error("[%s] 손절 매도 실패: %s", code, e)
+
+        # 트레일링 스탑 (익절보다 먼저 - 수익 보호)
+        for code in self.order_manager.check_trailing_stop():
+            try:
+                self.order_manager.execute_sell(code, "트레일링스탑")
+            except Exception as e:
+                logger.error("[%s] 트레일링스탑 매도 실패: %s", code, e)
 
         # 익절
         for code in self.order_manager.check_take_profit():
@@ -186,15 +200,31 @@ class AutoTrader:
             except Exception as e:
                 logger.error("[%s] 익절 매도 실패: %s", code, e)
 
-        # 트레일링 스탑
-        for code in self.order_manager.check_trailing_stop():
-            try:
-                self.order_manager.execute_sell(code, "트레일링스탑")
-            except Exception as e:
-                logger.error("[%s] 트레일링스탑 매도 실패: %s", code, e)
+        # 장 마감 전 강제 청산 (15:15 이후 보유 종목 모두 매도)
+        now_str = datetime.now().strftime("%H:%M")
+        if now_str >= "15:15":
+            remaining = list(self.order_manager.positions.keys())
+            for code in remaining:
+                try:
+                    pos = self.order_manager.positions[code]
+                    logger.info(
+                        "장마감 청산: %s(%s) 수익률=%.2f%%",
+                        pos.stock_name, code, pos.profit_rate,
+                    )
+                    self.order_manager.execute_sell(code, "장마감청산")
+                except Exception as e:
+                    logger.error("[%s] 장마감 청산 실패: %s", code, e)
 
     def _analyze_and_trade(self, stock_code: str) -> None:
         """종목을 분석하고 매매를 실행한다."""
+        # 쿨다운 확인 (최근 손절한 종목은 일정 시간 재매수 금지)
+        if stock_code in self._cooldown_stocks:
+            cooldown_until = self._cooldown_stocks[stock_code]
+            if time.time() < cooldown_until:
+                return  # 쿨다운 중
+            else:
+                del self._cooldown_stocks[stock_code]
+
         # 시세 데이터 조회
         current_price = self.api.get_current_price(stock_code)
         if not current_price:
@@ -208,8 +238,7 @@ class AutoTrader:
         if not candles:
             return
 
-        # Expert 모드 분석 데이터 (ATR 등)
-        analysis = None
+        # Expert 모드: full_analysis를 한 번만 호출하여 signal도 직접 생성
         atr_value = 0.0
         if isinstance(self.strategy, ExpertStrategy):
             analysis = self.strategy.full_analysis(
@@ -220,6 +249,7 @@ class AutoTrader:
             )
             if analysis.technical:
                 atr_value = analysis.technical.atr
+
             if analysis.decision != "HOLD":
                 logger.info("\n%s", analysis.summary())
             elif self._cycle_count % 5 == 1:
@@ -230,8 +260,25 @@ class AutoTrader:
                     analysis.total_score, analysis.confidence * 100,
                 )
 
-        # 전략 분석
-        signal = self.strategy.analyze(stock_code, candles, current_price)
+            # full_analysis 결과로 직접 Signal 생성 (중복 호출 방지)
+            if analysis.decision in ("STRONG_BUY", "BUY"):
+                signal_type = SignalType.BUY
+            elif analysis.decision in ("STRONG_SELL", "SELL"):
+                signal_type = SignalType.SELL
+            else:
+                signal_type = SignalType.HOLD
+
+            reason_str = " | ".join(analysis.reasons[:3]) if analysis.reasons else analysis.decision
+            from strategy.base import Signal
+            signal = Signal(
+                signal_type=signal_type,
+                stock_code=stock_code,
+                reason=reason_str,
+                strength=analysis.confidence,
+            )
+        else:
+            # 비-Expert 전략은 기존 방식
+            signal = self.strategy.analyze(stock_code, candles, current_price)
 
         if signal.signal_type == SignalType.BUY:
             if not self.order_manager.can_buy():
@@ -272,10 +319,6 @@ class AutoTrader:
                 # 매도는 더 민감하게 (손실 최소화)
                 if signal.strength >= 0.12:
                     self.order_manager.execute_sell(stock_code, signal.reason)
-                else:
-                    logger.debug(
-                        "  → 매도 신호 강도 부족: %.2f < 0.12 (패스)", signal.strength,
-                    )
 
     def _log_status(self) -> None:
         """현재 상태를 로그에 출력한다."""

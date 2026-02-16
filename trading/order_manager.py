@@ -262,14 +262,27 @@ class OrderManager:
         return targets
 
     def check_take_profit(self) -> list[str]:
-        """익절 조건을 확인하여 매도 대상 종목을 반환한다."""
+        """익절 조건을 확인하여 매도 대상 종목을 반환한다.
+
+        ATR 기반 동적 익절: ATR이 있으면 ATR의 3배를 익절선으로 사용.
+        없으면 설정의 고정 익절률 사용.
+        트레일링 스탑이 수익 보호를 담당하므로, 익절은 큰 수익 확정용으로만 사용.
+        """
         targets = []
         for code, pos in self.positions.items():
-            if pos.profit_rate >= self.settings.take_profit_pct:
+            # ATR 기반 동적 익절
+            if pos.atr_at_buy > 0 and pos.avg_price > 0:
+                dynamic_take_pct = pos.atr_at_buy * 3 / pos.avg_price * 100
+                # 최소 설정값, 최대 8%
+                take_pct = max(self.settings.take_profit_pct, min(8.0, dynamic_take_pct))
+            else:
+                take_pct = self.settings.take_profit_pct
+
+            if pos.profit_rate >= take_pct:
                 targets.append(code)
                 logger.info(
                     "✓ 익절 대상: %s(%s) 수익률=%.2f%% (기준: %.1f%%)",
-                    pos.stock_name, code, pos.profit_rate, self.settings.take_profit_pct,
+                    pos.stock_name, code, pos.profit_rate, take_pct,
                 )
         return targets
 
