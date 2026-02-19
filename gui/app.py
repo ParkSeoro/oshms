@@ -883,6 +883,17 @@ class OshmsApp:
             )
             return resp.content[0].text.strip()
         except Exception as e:
+            err = str(e)
+            if "credit balance" in err.lower() or "billing" in err.lower():
+                return ("Anthropic API 크레딧이 부족합니다.\n\n"
+                        "해결 방법:\n"
+                        "1. console.anthropic.com → Plans & Billing에서 크레딧 충전\n"
+                        "2. 또는 설정에서 OpenAI API 키를 입력하여 사용\n\n"
+                        "OpenAI API 키는 platform.openai.com에서 발급받을 수 있습니다.")
+            if "invalid" in err.lower() and "api" in err.lower():
+                return ("Anthropic API 키가 유효하지 않습니다.\n\n"
+                        "설정에서 API 키를 확인해주세요.\n"
+                        "console.anthropic.com → API Keys에서 확인 가능합니다.")
             return f"Anthropic API 오류: {e}"
 
     def _rule_based_response(self, msg: str, context: str) -> str:
