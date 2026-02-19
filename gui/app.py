@@ -820,6 +820,19 @@ class OshmsApp:
         """OpenAI API 호출."""
         try:
             from openai import OpenAI
+        except ImportError:
+            try:
+                import subprocess, sys
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", "openai"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                from openai import OpenAI
+            except Exception:
+                return ("openai 패키지가 설치되어 있지 않습니다.\n\n"
+                        "터미널에서 다음 명령어를 실행해주세요:\n"
+                        "  pip install openai")
+        try:
             client = OpenAI(api_key=api_key)
 
             messages = [{"role": "system", "content": context}]
@@ -841,6 +854,21 @@ class OshmsApp:
         """Anthropic API 호출."""
         try:
             import anthropic
+        except ImportError:
+            # 자동 설치 시도
+            try:
+                import subprocess, sys
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", "anthropic"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                import anthropic
+            except Exception:
+                return ("anthropic 패키지가 설치되어 있지 않습니다.\n\n"
+                        "터미널에서 다음 명령어를 실행해주세요:\n"
+                        "  pip install anthropic\n\n"
+                        "또는 설정에서 OpenAI API 키를 사용하시면 별도 설치 없이 이용 가능합니다.")
+        try:
             client = anthropic.Anthropic(api_key=api_key)
 
             messages = []
