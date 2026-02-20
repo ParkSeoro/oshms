@@ -79,7 +79,7 @@ class OshmsApp:
         "TKSE": ("09:00~15:00 (KST)", False),
     }
 
-    VERSION = "2.5.0"
+    VERSION = "2.6.0"
 
     ROADMAP = [
         ("v2.4", "AI 분석 (OpenAI/Claude)", True),
@@ -1170,22 +1170,6 @@ class OshmsApp:
         try:
             from trading.state_manager import StateManager
             self._state_mgr = StateManager()
-            stats = self._state_mgr.get_stats_summary()
-
-            if stats["total_trades"] > 0:
-                self.stat_labels["cum_trades"].config(text=f"{stats['total_trades']} 건")
-                wr = stats['win_rate']
-                self.stat_labels["cum_wins"].config(
-                    text=f"{wr:.1f}%",
-                    fg=self.c["green"] if wr >= 50 else self.c["red"])
-                tp = stats['total_profit']
-                self.stat_labels["cum_profit"].config(
-                    text=f"{tp:+,.0f} 원",
-                    fg=self.c["green"] if tp >= 0 else self.c["red"])
-                self.stat_labels["best_trade"].config(
-                    text=f"{stats['best_trade']:+,.0f} 원")
-                self.stat_labels["evo_gen"].config(
-                    text=f"#{stats['evolution_gen']}")
 
             resume = self._state_mgr.get_resume_info()
             if resume["last_active"]:
@@ -1196,6 +1180,48 @@ class OshmsApp:
             pass
 
         self._load_trade_history()
+        self._update_cumulative_stats()
+
+    def _update_cumulative_stats(self):
+        """logs/trades.json에서 누적 통계를 직접 계산."""
+        trade_file = Path("logs/trades.json")
+        if not trade_file.exists():
+            return
+        try:
+            data = json.loads(trade_file.read_text(encoding="utf-8"))
+            sells = [t for t in data if t.get("side") == "SELL"]
+            if not sells:
+                return
+
+            total_sells = len(sells)
+            wins = sum(1 for t in sells if t.get("profit_loss", 0) > 0)
+            total_profit = sum(t.get("profit_loss", 0) for t in sells)
+            profits = [t.get("profit_loss", 0) for t in sells]
+            best = max(profits) if profits else 0
+            win_rate = (wins / total_sells * 100) if total_sells > 0 else 0
+
+            c = self.c
+            self.stat_labels["cum_trades"].config(text=f"{total_sells} 건")
+            self.stat_labels["cum_wins"].config(
+                text=f"{win_rate:.1f}%",
+                fg=c["green"] if win_rate >= 50 else c["red"])
+            self.stat_labels["cum_profit"].config(
+                text=f"{total_profit:+,.0f} 원",
+                fg=c["green"] if total_profit >= 0 else c["red"])
+            self.stat_labels["best_trade"].config(
+                text=f"{best:+,.0f} 원")
+
+            # 진화 세대 표시
+            evo_file = Path("data/evolution_state.json")
+            if evo_file.exists():
+                try:
+                    evo = json.loads(evo_file.read_text(encoding="utf-8"))
+                    gen = evo.get("generation", 0)
+                    self.stat_labels["evo_gen"].config(text=f"#{gen}")
+                except Exception:
+                    pass
+        except (json.JSONDecodeError, OSError):
+            pass
 
     def _load_trade_history(self):
         trade_file = Path("logs/trades.json")
@@ -1354,19 +1380,7 @@ class OshmsApp:
 
         self._load_trade_history()
         self._load_evolution_details()
-
-        if self._state_mgr:
-            stats = self._state_mgr.get_stats_summary()
-            if stats["total_trades"] > 0:
-                self.stat_labels["cum_trades"].config(text=f"{stats['total_trades']} 건")
-                wr = stats["win_rate"]
-                self.stat_labels["cum_wins"].config(
-                    text=f"{wr:.1f}%",
-                    fg=c["green"] if wr >= 50 else c["red"])
-                tp = stats["total_profit"]
-                self.stat_labels["cum_profit"].config(
-                    text=f"{tp:+,.0f} 원",
-                    fg=c["green"] if tp >= 0 else c["red"])
+        self._update_cumulative_stats()
 
     def _auto_refresh(self):
         if self._is_trading and self.auto_refresh_var.get():

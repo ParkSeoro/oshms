@@ -107,6 +107,21 @@ class ExpertStrategy(BaseStrategy):
         """시장 컨텍스트를 외부에서 설정한다."""
         self._market_ctx = ctx
 
+    def apply_adjustments(self, adjustments: dict) -> None:
+        """진화 엔진의 가중치 조정을 적용한다."""
+        for key, adj in adjustments.items():
+            if key in self.WEIGHTS:
+                new_val = max(0.05, min(0.60, self.WEIGHTS[key] + adj))
+                self.WEIGHTS[key] = new_val
+
+        # 가중치 정규화 (합이 1.0이 되도록)
+        total = sum(self.WEIGHTS.values())
+        if total > 0:
+            for key in self.WEIGHTS:
+                self.WEIGHTS[key] /= total
+
+        logger.info("진화 가중치 적용: %s", {k: f"{v:.2f}" for k, v in self.WEIGHTS.items()})
+
     def analyze(self, stock_code: str, candles: list[dict], current_price: dict) -> Signal:
         """종합 분석을 수행하여 매매 신호를 생성한다."""
         price = current_price.get("price", 0)

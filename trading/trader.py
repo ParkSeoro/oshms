@@ -2,20 +2,26 @@
 
 전략 분석 → 리스크 관리 → 주문 실행의 전체 사이클을 관리한다.
 Expert 모드에서는 시장 컨텍스트와 멀티 타임프레임 분석을 추가한다.
+
+v2.6: 진화엔진 연동, 전체 시장 스캔, 수익 매도 최적화
 """
 
+import json
 import time
 from datetime import datetime
+from pathlib import Path
 
 from api.kis_api import KISApi
 from config.settings import Settings
-from strategy.base import BaseStrategy, SignalType
+from strategy.base import BaseStrategy, Signal, SignalType
 from strategy.expert import ExpertStrategy
 from strategy.market_context import MarketContextAnalyzer, MarketContext
 from trading.order_manager import OrderManager
 from utils.logger import setup_logger
 
 logger = setup_logger("oshms.trading.trader")
+
+TRADES_FILE = Path("logs/trades.json")
 
 
 class AutoTrader:
@@ -36,42 +42,46 @@ class AutoTrader:
 
         # 손절 후 재매수 방지 (종목코드 → 쿨다운 만료 시각)
         self._cooldown_stocks: dict[str, float] = {}
-        self._COOLDOWN_SECONDS = 600  # 10분 쿨다운
+        self._COOLDOWN_SECONDS = 900  # 15분 쿨다운
+
+        # 진화 엔진
+        self._evolution = None
+        self._trades_since_evolution = 0
+        self._evolution_enabled = True
+
+        # 종목 선정 캐시 (5분마다 갱신)
+        self._stock_cache: list[str] = []
+        self._stock_cache_time: float = 0
+        self._STOCK_CACHE_TTL = 300  # 5분
 
         if isinstance(strategy, ExpertStrategy):
             self._market_analyzer = MarketContextAnalyzer(api)
             strategy.market_analyzer = self._market_analyzer
 
     def is_trading_time(self) -> bool:
-        """현재 시간이 매매 가능 시간인지 확인한다.
-
-        장 마감 10분 전(15:10~15:20) 이후에는 신규 매매를 하지 않는다.
-        (보유 중인 종목의 손절/익절은 계속 작동)
-        """
+        """현재 시간이 매매 가능 시간인지 확인한다."""
         now = datetime.now().strftime("%H:%M")
         return self.settings.trading_start_time <= now <= self.settings.trading_end_time
 
     def start(self, target_stocks: list[str] | None = None, interval: int = 10) -> None:
-        """자동 매매를 시작한다.
-
-        Args:
-            target_stocks: 감시할 종목 코드 리스트. None이면 거래량 상위 자동 선정.
-            interval: 매매 사이클 간격 (초)
-        """
+        """자동 매매를 시작한다."""
         self._running = True
         is_expert = isinstance(self.strategy, ExpertStrategy)
 
+        # 진화 엔진 초기화
+        self._init_evolution()
+
         logger.info("=" * 70)
-        logger.info("  OSHMS 자동 매매 시스템 가동")
+        logger.info("  OSHMS 자동 매매 시스템 v2.6 가동")
         logger.info("=" * 70)
         logger.info("전략: %s%s", self.strategy.name, " (전문가 모드)" if is_expert else "")
         logger.info("매매 시간: %s ~ %s", self.settings.trading_start_time, self.settings.trading_end_time)
         logger.info("최대 매수금액: %s원", f"{self.settings.max_buy_amount:,}")
         logger.info("최대 보유종목: %d개", self.settings.max_hold_count)
         logger.info("손절: %.1f%% / 익절: %.1f%%", self.settings.stop_loss_pct, self.settings.take_profit_pct)
-        logger.info("감시 주기: %d초", interval)
-        if is_expert:
-            logger.info("분석 모듈: 기술적분석 + 캔들패턴 + 뉴스감성 + 시장레짐")
+        logger.info("감시 주기: %d초 | 종목풀: 전체 시장 스캔", interval)
+        if self._evolution:
+            logger.info("진화 엔진: 활성 (세대 #%d)", self._evolution.state.generation)
         logger.info("=" * 70)
 
         # 잔고 동기화
@@ -89,7 +99,7 @@ class AutoTrader:
                 if is_expert:
                     self._update_market_context()
 
-                stocks = target_stocks or self._select_stocks()
+                stocks = target_stocks or self._select_stocks_wide()
                 self._run_cycle(stocks)
 
                 time.sleep(interval)
@@ -105,6 +115,85 @@ class AutoTrader:
         self._running = False
         logger.info("자동 매매 중지 (총 %d 사이클)", self._cycle_count)
 
+    # ──────────────────────────────────────────────
+    # 진화 엔진
+    # ──────────────────────────────────────────────
+
+    def _init_evolution(self):
+        """진화 엔진을 초기화한다."""
+        try:
+            from learning.evolution import EvolutionEngine
+            self._evolution = EvolutionEngine()
+            # 기존 거래 수로 진화 카운터 초기화
+            self._trades_since_evolution = self._count_recent_trades()
+            logger.info("진화 엔진 초기화 완료 (최근 거래 %d건)", self._trades_since_evolution)
+        except Exception as e:
+            logger.warning("진화 엔진 초기화 실패: %s", e)
+            self._evolution = None
+
+    def _count_recent_trades(self) -> int:
+        """최근 거래 수를 반환한다."""
+        if not TRADES_FILE.exists():
+            return 0
+        try:
+            trades = json.loads(TRADES_FILE.read_text(encoding="utf-8"))
+            sells = [t for t in trades if t.get("side") == "SELL"]
+            return len(sells) % 15  # 15건마다 진화하므로 나머지
+        except Exception:
+            return 0
+
+    def _try_evolve(self):
+        """진화 조건 충족 시 진화 사이클을 실행한다."""
+        if not self._evolution or not self._evolution_enabled:
+            return
+        if not self._evolution.should_evolve(self._trades_since_evolution):
+            return
+
+        logger.info("진화 조건 충족 (%d건 거래) - 진화 사이클 시작", self._trades_since_evolution)
+        try:
+            trades = self._load_trades()
+            if not trades:
+                return
+
+            # 최근 캔들 데이터 (진화 최적화용)
+            candles = None
+            held_codes = list(self.order_manager.positions.keys())
+            if held_codes:
+                try:
+                    candles = self.api.get_daily_chart(held_codes[0], count=60)
+                except Exception:
+                    pass
+
+            result = self._evolution.evolve(trades, candles)
+            self._trades_since_evolution = 0
+
+            # 진화 결과 적용
+            adjustments = self._evolution.get_strategy_adjustments()
+            if adjustments and isinstance(self.strategy, ExpertStrategy):
+                self.strategy.apply_adjustments(adjustments)
+                logger.info("진화 조정 적용: %s", adjustments)
+
+            logger.info(
+                "진화 세대 #%d 완료: 적합도=%.1f (규칙 +%d -%d)",
+                result["generation"], result["fitness"],
+                result["rules_added"], result["rules_removed"],
+            )
+        except Exception as e:
+            logger.error("진화 실행 실패: %s", e)
+
+    def _load_trades(self) -> list[dict]:
+        """거래 기록을 로드한다."""
+        if not TRADES_FILE.exists():
+            return []
+        try:
+            return json.loads(TRADES_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+    # ──────────────────────────────────────────────
+    # 시장 분석
+    # ──────────────────────────────────────────────
+
     def _update_market_context(self) -> None:
         """시장 컨텍스트를 갱신한다."""
         now = time.time()
@@ -118,7 +207,6 @@ class AutoTrader:
                     self.strategy.set_market_context(self._market_ctx)
                 self._market_ctx_updated = now
 
-                # 시장 상황에 따른 동적 리스크 조정
                 if self._market_ctx:
                     adj = self._market_analyzer.get_regime_strategy_adjustment(self._market_ctx)
                     if adj.get("stop_loss_adj", 0) != 0:
@@ -129,26 +217,104 @@ class AutoTrader:
         except Exception as e:
             logger.warning("시장 컨텍스트 갱신 실패: %s", e)
 
-    def _select_stocks(self) -> list[str]:
-        """거래량 상위 종목을 자동 선정한다.
+    # ──────────────────────────────────────────────
+    # 종목 선정 (전체 시장 스캔)
+    # ──────────────────────────────────────────────
 
-        급등/급락주와 저가주를 제외하고 안정적인 거래 대상을 선정한다.
+    def _select_stocks_wide(self) -> list[str]:
+        """전체 시장을 스캔하여 매매 후보를 선정한다.
+
+        거래량 + 거래대금 + 상승률 상위 종목을 합산하여
+        중복 제거 후 최종 후보를 선정한다.
         """
+        now = time.time()
+        if self._stock_cache and (now - self._stock_cache_time) < self._STOCK_CACHE_TTL:
+            return self._stock_cache
+
         try:
-            rank = self.api.get_volume_rank(count=20)
-            filtered = [
-                s["stock_code"]
-                for s in rank
-                if (
-                    -8 < s.get("change_rate", 0) < 10  # 급등/급락 제외 (비대칭: 상승은 더 허용)
-                    and s.get("price", 0) > 2000  # 2,000원 미만 저가주 제외
-                    and s.get("price", 0) < 500000  # 50만원 초과 고가주 제외 (슬리피지)
+            seen = set()
+            candidates = []  # (code, score)
+
+            # 1. 거래량 상위 30개
+            try:
+                vol_rank = self.api.get_volume_rank(count=30)
+                for i, s in enumerate(vol_rank):
+                    code = s["stock_code"]
+                    if code not in seen and self._is_valid_stock(s):
+                        seen.add(code)
+                        candidates.append((code, 30 - i))  # 상위일수록 높은 점수
+            except Exception as e:
+                logger.warning("거래량 순위 조회 실패: %s", e)
+
+            time.sleep(0.3)
+
+            # 2. 거래대금 상위 30개
+            try:
+                amount_rank = self.api.get_market_cap_rank(count=30)
+                for i, s in enumerate(amount_rank):
+                    code = s["stock_code"]
+                    if self._is_valid_stock(s):
+                        if code in seen:
+                            # 이미 있으면 점수 추가 (중복 = 더 인기)
+                            for j, (c, sc) in enumerate(candidates):
+                                if c == code:
+                                    candidates[j] = (c, sc + 20 - i)
+                                    break
+                        else:
+                            seen.add(code)
+                            candidates.append((code, 20 - i))
+            except Exception as e:
+                logger.warning("거래대금 순위 조회 실패: %s", e)
+
+            time.sleep(0.3)
+
+            # 3. 상승 종목 20개 (모멘텀)
+            try:
+                up_rank = self.api.get_fluctuation_rank(direction="up", count=20)
+                for i, s in enumerate(up_rank):
+                    code = s["stock_code"]
+                    cr = s.get("change_rate", 0)
+                    if self._is_valid_stock(s) and 0.5 < cr < 8:  # 소폭~중폭 상승만
+                        if code in seen:
+                            for j, (c, sc) in enumerate(candidates):
+                                if c == code:
+                                    candidates[j] = (c, sc + 15)
+                                    break
+                        else:
+                            seen.add(code)
+                            candidates.append((code, 15 - i))
+            except Exception as e:
+                logger.warning("상승률 순위 조회 실패: %s", e)
+
+            # 점수 기준 정렬 → 상위 20개 선정
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            result = [code for code, _ in candidates[:20]]
+
+            if result:
+                self._stock_cache = result
+                self._stock_cache_time = now
+                logger.info(
+                    "종목 선정: %d개 후보 (거래량+거래대금+모멘텀 합산)",
+                    len(result),
                 )
-            ]
-            return filtered[:10]
+            return result
+
         except Exception as e:
             logger.error("종목 선정 실패: %s", e)
-            return []
+            return self._stock_cache or []
+
+    def _is_valid_stock(self, stock: dict) -> bool:
+        """매매 적합 종목인지 검증한다."""
+        price = stock.get("price", 0)
+        change_rate = stock.get("change_rate", 0)
+        return (
+            2000 < price < 500000
+            and -5 < change_rate < 8  # 급등/급락 제외 (보수적)
+        )
+
+    # ──────────────────────────────────────────────
+    # 매매 사이클
+    # ──────────────────────────────────────────────
 
     def _run_cycle(self, stocks: list[str]) -> None:
         """하나의 매매 사이클을 실행한다."""
@@ -157,7 +323,7 @@ class AutoTrader:
         # 1. 보유 종목 가격 갱신
         self.order_manager.update_prices()
 
-        # 2. 손절/익절 확인 (최우선)
+        # 2. 리스크 관리 (최우선)
         self._check_risk_management()
 
         # 3. 종목별 전략 분석
@@ -167,61 +333,96 @@ class AutoTrader:
 
             try:
                 self._analyze_and_trade(stock_code)
-                time.sleep(0.2)  # API 속도 제한 방지
+                time.sleep(0.2)
             except Exception as e:
                 logger.error("[%s] 분석 중 오류: %s", stock_code, e)
+
+        # 4. 진화 체크
+        if self._cycle_count % 5 == 0:
+            self._try_evolve()
 
         if self._cycle_count % 10 == 0:
             self._log_status()
 
     def _check_risk_management(self) -> None:
-        """리스크 관리: 손절, 익절, 트레일링 스탑, 장마감 청산을 확인한다."""
-        # 손절 (최우선)
-        for code in self.order_manager.check_stop_loss():
-            try:
-                self.order_manager.execute_sell(code, "손절")
-                # 손절한 종목은 쿨다운 등록 (재매수 방지)
-                self._cooldown_stocks[code] = time.time() + self._COOLDOWN_SECONDS
-                logger.info("[%s] 쿨다운 등록: %d초간 재매수 금지", code, self._COOLDOWN_SECONDS)
-            except Exception as e:
-                logger.error("[%s] 손절 매도 실패: %s", code, e)
+        """리스크 관리: 트레일링 스탑, 익절, 손절, 장마감 청산."""
 
-        # 트레일링 스탑 (익절보다 먼저 - 수익 보호)
+        # 1. 트레일링 스탑 (수익 보호 최우선)
         for code in self.order_manager.check_trailing_stop():
             try:
-                self.order_manager.execute_sell(code, "트레일링스탑")
+                pos = self.order_manager.positions.get(code)
+                if pos and pos.profit_rate > 0:
+                    self.order_manager.execute_sell(code, "트레일링스탑")
             except Exception as e:
                 logger.error("[%s] 트레일링스탑 매도 실패: %s", code, e)
 
-        # 익절
+        # 2. 익절 (목표 수익 달성)
         for code in self.order_manager.check_take_profit():
             try:
                 self.order_manager.execute_sell(code, "익절")
+                self._on_trade_completed()
             except Exception as e:
                 logger.error("[%s] 익절 매도 실패: %s", code, e)
 
-        # 장 마감 전 강제 청산 (15:15 이후 보유 종목 모두 매도)
+        # 3. 손절 (마지막 수단 - 극단적 하락만)
+        for code in self.order_manager.check_stop_loss():
+            try:
+                pos = self.order_manager.positions.get(code)
+                if not pos:
+                    continue
+
+                # 손절 기준을 더 보수적으로: -3% 이하만 실제 손절
+                if pos.profit_rate <= -3.0:
+                    self.order_manager.execute_sell(code, "손절")
+                    self._cooldown_stocks[code] = time.time() + self._COOLDOWN_SECONDS
+                    logger.info("[%s] 쿨다운 등록: %d초간 재매수 금지", code, self._COOLDOWN_SECONDS)
+                    self._on_trade_completed()
+                else:
+                    logger.info(
+                        "[%s] 손절 대기: %.2f%% (기준: -3.0%% 미만 시 매도)",
+                        code, pos.profit_rate,
+                    )
+            except Exception as e:
+                logger.error("[%s] 손절 매도 실패: %s", code, e)
+
+        # 4. 장 마감 전 수익 종목 청산 (15:15 이후)
         now_str = datetime.now().strftime("%H:%M")
         if now_str >= "15:15":
             remaining = list(self.order_manager.positions.keys())
             for code in remaining:
                 try:
                     pos = self.order_manager.positions[code]
-                    logger.info(
-                        "장마감 청산: %s(%s) 수익률=%.2f%%",
-                        pos.stock_name, code, pos.profit_rate,
-                    )
-                    self.order_manager.execute_sell(code, "장마감청산")
+                    if pos.profit_rate > 0:
+                        logger.info(
+                            "장마감 수익 청산: %s(%s) 수익률=%.2f%%",
+                            pos.stock_name, code, pos.profit_rate,
+                        )
+                        self.order_manager.execute_sell(code, "장마감청산(수익)")
+                    elif pos.profit_rate <= -2.0:
+                        logger.info(
+                            "장마감 손실 청산: %s(%s) 수익률=%.2f%%",
+                            pos.stock_name, code, pos.profit_rate,
+                        )
+                        self.order_manager.execute_sell(code, "장마감청산(손절)")
+                    else:
+                        logger.info(
+                            "장마감 보류: %s(%s) 수익률=%.2f%% (내일 회복 대기)",
+                            pos.stock_name, code, pos.profit_rate,
+                        )
                 except Exception as e:
                     logger.error("[%s] 장마감 청산 실패: %s", code, e)
 
+    def _on_trade_completed(self):
+        """매도 완료 시 진화 카운터 증가."""
+        self._trades_since_evolution += 1
+
     def _analyze_and_trade(self, stock_code: str) -> None:
         """종목을 분석하고 매매를 실행한다."""
-        # 쿨다운 확인 (최근 손절한 종목은 일정 시간 재매수 금지)
+        # 쿨다운 확인
         if stock_code in self._cooldown_stocks:
             cooldown_until = self._cooldown_stocks[stock_code]
             if time.time() < cooldown_until:
-                return  # 쿨다운 중
+                return
             else:
                 del self._cooldown_stocks[stock_code]
 
@@ -260,7 +461,7 @@ class AutoTrader:
                     analysis.total_score, analysis.confidence * 100,
                 )
 
-            # full_analysis 결과로 직접 Signal 생성 (중복 호출 방지)
+            # full_analysis 결과로 직접 Signal 생성
             if analysis.decision in ("STRONG_BUY", "BUY"):
                 signal_type = SignalType.BUY
             elif analysis.decision in ("STRONG_SELL", "SELL"):
@@ -269,7 +470,6 @@ class AutoTrader:
                 signal_type = SignalType.HOLD
 
             reason_str = " | ".join(analysis.reasons[:3]) if analysis.reasons else analysis.decision
-            from strategy.base import Signal
             signal = Signal(
                 signal_type=signal_type,
                 stock_code=stock_code,
@@ -277,9 +477,9 @@ class AutoTrader:
                 strength=analysis.confidence,
             )
         else:
-            # 비-Expert 전략은 기존 방식
             signal = self.strategy.analyze(stock_code, candles, current_price)
 
+        # ── 매수 로직 ──
         if signal.signal_type == SignalType.BUY:
             if not self.order_manager.can_buy():
                 return
@@ -294,8 +494,8 @@ class AutoTrader:
                 signal.strength, signal.reason,
             )
 
-            # Expert 모드: 매수 강도 기준 차등
-            min_strength = 0.20 if isinstance(self.strategy, ExpertStrategy) else 0.3
+            # 매수 강도 기준 (Expert는 0.25 이상, 일반 0.30 이상)
+            min_strength = 0.25 if isinstance(self.strategy, ExpertStrategy) else 0.3
             if signal.strength >= min_strength:
                 self.order_manager.execute_buy(
                     stock_code, stock_name, current_price["price"], signal.reason,
@@ -306,6 +506,7 @@ class AutoTrader:
                     "  → 매수 신호 강도 부족: %.2f < %.2f (패스)", signal.strength, min_strength,
                 )
 
+        # ── 매도 로직 (수익 시에만 전략 매도) ──
         elif signal.signal_type == SignalType.SELL:
             if stock_code in self.order_manager.positions:
                 pos = self.order_manager.positions[stock_code]
@@ -316,9 +517,14 @@ class AutoTrader:
                     pos.profit_rate, signal.strength, signal.reason,
                 )
 
-                # 매도는 더 민감하게 (손실 최소화)
-                if signal.strength >= 0.12:
+                # 수익인 경우만 전략 매도 (손실 시 회복 대기)
+                if pos.profit_rate > 0.3 and signal.strength >= 0.15:
                     self.order_manager.execute_sell(stock_code, signal.reason)
+                    self._on_trade_completed()
+                elif pos.profit_rate > 0:
+                    logger.info("  → 소폭 수익(%.2f%%) - 추가 상승 대기", pos.profit_rate)
+                else:
+                    logger.info("  → 손실 중(%.2f%%) - 회복 대기 (손절만 작동)", pos.profit_rate)
 
     def _log_status(self) -> None:
         """현재 상태를 로그에 출력한다."""
@@ -339,13 +545,20 @@ class AutoTrader:
             )
         logger.info("  총 평가손익: %s원", f"{total_profit:,}")
 
-        # 시장 컨텍스트 표시
         if self._market_ctx:
             logger.info(
                 "  시장: %s (KOSPI=%+.2f%% KOSDAQ=%+.2f%%)",
                 self._market_ctx.regime,
                 self._market_ctx.kospi_change,
                 self._market_ctx.kosdaq_change,
+            )
+
+        if self._evolution:
+            logger.info(
+                "  진화: 세대 #%d (적합도=%.1f) | 다음 진화까지 %d건",
+                self._evolution.state.generation,
+                self._evolution.state.best_fitness,
+                15 - self._trades_since_evolution,
             )
 
     def run_single_cycle(self, target_stocks: list[str]) -> dict:

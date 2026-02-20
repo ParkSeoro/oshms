@@ -260,6 +260,95 @@ class KISApi:
             })
         return results
 
+    def get_market_cap_rank(self, count: int = 30) -> list[dict]:
+        """시가총액 상위 종목을 조회한다 (KOSPI/KOSDAQ)."""
+        tr_id = "FHPST01710000"
+        url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/volume-rank"
+        results = []
+
+        # 거래대금 기준으로 조회 (거래량보다 실질적)
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_COND_SCR_DIV_CODE": "20174",  # 거래대금 상위
+            "FID_INPUT_ISCD": "0000",
+            "FID_DIV_CLS_CODE": "0",
+            "FID_BLNG_CLS_CODE": "0",
+            "FID_TRGT_CLS_CODE": "111111111",
+            "FID_TRGT_EXLS_CLS_CODE": "000000",
+            "FID_INPUT_PRICE_1": "2000",
+            "FID_INPUT_PRICE_2": "500000",
+            "FID_VOL_CNT": "0",
+            "FID_INPUT_DATE_1": "",
+        }
+        try:
+            resp = self.session.get(url, headers=self._headers(tr_id), params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("rt_cd") == "0":
+                for item in data.get("output", [])[:count]:
+                    results.append({
+                        "stock_code": item.get("mksc_shrn_iscd", ""),
+                        "stock_name": item.get("hts_kor_isnm", ""),
+                        "price": int(item.get("stck_prpr", 0)),
+                        "change_rate": float(item.get("prdy_ctrt", 0)),
+                        "volume": int(item.get("acml_vol", 0)),
+                        "trade_amount": int(item.get("acml_tr_pbmn", 0)),
+                    })
+        except Exception as e:
+            logger.warning("거래대금 상위 조회 실패: %s", e)
+        return results
+
+    def get_fluctuation_rank(self, direction: str = "up", count: int = 30) -> list[dict]:
+        """등락률 상위/하위 종목을 조회한다.
+
+        Args:
+            direction: "up"(상승률 상위) 또는 "down"(하락률 상위)
+        """
+        tr_id = "FHPST01700000"
+        url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/psearch-result"
+
+        # 등락률 상위 - 상승 중인 종목 발굴
+        params = {
+            "USER_ID": "",
+            "seq": "0",
+        }
+        # Note: This endpoint may require a saved search condition.
+        # Fallback: use volume-rank with different sort
+        tr_id2 = "FHPST01710000"
+        url2 = f"{self.base_url}/uapi/domestic-stock/v1/quotations/volume-rank"
+        sort_code = "20171" if direction == "up" else "20172"  # 거래량/거래대금 순
+        params2 = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_COND_SCR_DIV_CODE": sort_code,
+            "FID_INPUT_ISCD": "0000",
+            "FID_DIV_CLS_CODE": "0",
+            "FID_BLNG_CLS_CODE": "1" if direction == "up" else "2",  # 1=상승, 2=하락
+            "FID_TRGT_CLS_CODE": "111111111",
+            "FID_TRGT_EXLS_CLS_CODE": "000000",
+            "FID_INPUT_PRICE_1": "2000",
+            "FID_INPUT_PRICE_2": "500000",
+            "FID_VOL_CNT": "0",
+            "FID_INPUT_DATE_1": "",
+        }
+        results = []
+        try:
+            resp = self.session.get(url2, headers=self._headers(tr_id2), params=params2, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("rt_cd") == "0":
+                for item in data.get("output", [])[:count]:
+                    results.append({
+                        "stock_code": item.get("mksc_shrn_iscd", ""),
+                        "stock_name": item.get("hts_kor_isnm", ""),
+                        "price": int(item.get("stck_prpr", 0)),
+                        "change_rate": float(item.get("prdy_ctrt", 0)),
+                        "volume": int(item.get("acml_vol", 0)),
+                        "trade_amount": int(item.get("acml_tr_pbmn", 0)),
+                    })
+        except Exception as e:
+            logger.warning("등락률 상위 조회 실패: %s", e)
+        return results
+
     # ──────────────────────────────────────────────
     # 주문
     # ──────────────────────────────────────────────
