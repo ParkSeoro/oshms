@@ -118,6 +118,7 @@ class OshmsApp:
         self._evolution = None
         self._analysis_cancel = threading.Event()
         self._analysis_thread = None
+        self._kis_api = None  # KISApi 싱글톤 캐시
 
         # AI 채팅 상태
         self._chat_messages: list[tuple[str, str]] = []  # (role, content)
@@ -1253,6 +1254,7 @@ class OshmsApp:
             json.dumps(prefs, ensure_ascii=False, indent=2), encoding="utf-8")
 
         self.settings = Settings.from_env()
+        self._reset_api()  # 설정 변경 시 API 재연결
         messagebox.showinfo("설정", "설정이 저장되었습니다.")
 
     def _validate_settings(self):
@@ -1279,6 +1281,17 @@ class OshmsApp:
                 return code
         return "KR"
 
+    def _get_api(self):
+        """KISApi 인스턴스를 캐싱하여 반환 (토큰 재발급 방지)."""
+        if self._kis_api is None:
+            from api.kis_api import KISApi
+            self._kis_api = KISApi(self.settings)
+        return self._kis_api
+
+    def _reset_api(self):
+        """설정 변경 시 API 인스턴스 초기화."""
+        self._kis_api = None
+
     def _refresh_balance(self):
         errors = self.settings.validate()
         if errors:
@@ -1287,8 +1300,7 @@ class OshmsApp:
 
         def _fetch():
             try:
-                from api.kis_api import KISApi
-                api = KISApi(self.settings)
+                api = self._get_api()
                 balance = api.get_balance()
                 kr_holdings = balance.get("holdings", [])
                 for h in kr_holdings:
@@ -1427,14 +1439,14 @@ class OshmsApp:
         logging.getLogger("oshms").addHandler(handler)
 
         try:
-            from api.kis_api import KISApi
             from strategy import (ExpertStrategy, ScalpingStrategy,
                                   MomentumStrategy, CombinedStrategy)
             from trading.trader import AutoTrader
             from trading.state_manager import StateManager
 
             self.settings = Settings.from_env()
-            api = KISApi(self.settings)
+            self._reset_api()
+            api = self._get_api()
             strategy_map = {
                 "expert": lambda: ExpertStrategy(api=api, settings=self.settings),
                 "scalping": ScalpingStrategy,
@@ -1505,14 +1517,12 @@ class OshmsApp:
 
         def _analyze():
             try:
-                from api.kis_api import KISApi
                 from strategy.expert import ExpertStrategy
                 from strategy.market_context import MarketContextAnalyzer
 
                 if cancel.is_set():
                     return
-                self.settings = Settings.from_env()
-                api = KISApi(self.settings)
+                api = self._get_api()
                 strategy = ExpertStrategy(api=api, settings=self.settings)
                 try:
                     ctx = MarketContextAnalyzer(api).analyze()

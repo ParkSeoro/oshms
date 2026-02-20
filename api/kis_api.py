@@ -59,6 +59,19 @@ class KISApi:
             "appsecret": self.settings.app_secret,
         }
         resp = self.session.post(url, json=body, timeout=10)
+
+        if resp.status_code == 403:
+            mode = "모의투자" if self.settings.is_mock else "실전투자"
+            raise ConnectionError(
+                f"토큰 발급 실패 (403 Forbidden)\n\n"
+                f"현재 모드: {mode}\n"
+                f"확인 사항:\n"
+                f"1. APP KEY / APP SECRET이 {mode}용인지 확인\n"
+                f"2. 한국투자증권 KIS Developers에서 API 사용 신청 확인\n"
+                f"3. 모의투자↔실전투자 설정이 올바른지 확인\n"
+                f"   (.env 파일의 KIS_MOCK=true/false)"
+            )
+
         resp.raise_for_status()
         data = resp.json()
 
