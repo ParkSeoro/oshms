@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from config.settings import Settings
 from utils.logger import setup_logger
@@ -25,6 +27,18 @@ class KISApi:
         self._access_token: str = ""
         self._token_expires_at: datetime = datetime.min
         self.session = requests.Session()
+
+        # 연결 끊김(RemoteDisconnected) 자동 재시도
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
 
     # ──────────────────────────────────────────────
     # 인증
