@@ -108,19 +108,49 @@ class ExpertStrategy(BaseStrategy):
         self._market_ctx = ctx
 
     def apply_adjustments(self, adjustments: dict) -> None:
-        """진화 엔진의 가중치 조정을 적용한다."""
-        for key, adj in adjustments.items():
-            if key in self.WEIGHTS:
-                new_val = max(0.05, min(0.60, self.WEIGHTS[key] + adj))
-                self.WEIGHTS[key] = new_val
+        """진화 엔진의 조정값을 적용한다.
 
-        # 가중치 정규화 (합이 1.0이 되도록)
-        total = sum(self.WEIGHTS.values())
-        if total > 0:
-            for key in self.WEIGHTS:
-                self.WEIGHTS[key] /= total
+        지원하는 키:
+        - WEIGHTS 키 (technical, pattern, sentiment, market, price_level)
+        - buy_threshold_adj, sell_threshold_adj
+        - stop_loss_adj, take_profit_adj
+        """
+        changes = []
 
-        logger.info("진화 가중치 적용: %s", {k: f"{v:.2f}" for k, v in self.WEIGHTS.items()})
+        # 1. 가중치 조정
+        weight_changed = False
+        for key in ("technical", "pattern", "sentiment", "market", "price_level"):
+            adj = adjustments.get(key, 0)
+            if adj and isinstance(adj, (int, float)):
+                old = self.WEIGHTS[key]
+                self.WEIGHTS[key] = max(0.05, min(0.60, old + adj))
+                weight_changed = True
+                changes.append(f"{key}: {old:.2f}→{self.WEIGHTS[key]:.2f}")
+
+        if weight_changed:
+            # 가중치 정규화 (합이 1.0이 되도록)
+            total = sum(self.WEIGHTS.values())
+            if total > 0:
+                for key in self.WEIGHTS:
+                    self.WEIGHTS[key] /= total
+
+        # 2. 매매 임계값 조정
+        if adjustments.get("buy_threshold_adj"):
+            adj = adjustments["buy_threshold_adj"]
+            if isinstance(adj, (int, float)):
+                old = self.BUY_THRESHOLD
+                self.BUY_THRESHOLD = max(0.05, min(0.40, old + adj))
+                changes.append(f"buy_thr: {old:.2f}→{self.BUY_THRESHOLD:.2f}")
+
+        if adjustments.get("sell_threshold_adj"):
+            adj = adjustments["sell_threshold_adj"]
+            if isinstance(adj, (int, float)):
+                old = self.SELL_THRESHOLD
+                self.SELL_THRESHOLD = max(-0.30, min(-0.03, old + adj))
+                changes.append(f"sell_thr: {old:.2f}→{self.SELL_THRESHOLD:.2f}")
+
+        if changes:
+            logger.info("진화 조정 적용: %s", " | ".join(changes))
 
     def analyze(self, stock_code: str, candles: list[dict], current_price: dict) -> Signal:
         """종합 분석을 수행하여 매매 신호를 생성한다."""

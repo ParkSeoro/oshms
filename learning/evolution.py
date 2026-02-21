@@ -98,6 +98,20 @@ class EvolutionEngine:
             opt_result = self._optimize_strategy(candles)
             result["optimization"] = opt_result
 
+            # 최적화 결과를 가중치에 반영
+            if opt_result and opt_result.get("params"):
+                params = opt_result["params"]
+                param_to_weight = {
+                    "technical_weight": "technical",
+                    "pattern_weight": "pattern",
+                    "sentiment_weight": "sentiment",
+                    "market_weight": "market",
+                    "price_level_weight": "price_level",
+                }
+                for param_key, weight_key in param_to_weight.items():
+                    if param_key in params:
+                        weight_adj[weight_key] = params[param_key] - 0.20  # 차이값을 조정으로
+
         # 5단계: 적합도(fitness) 평가
         fitness = self._evaluate_fitness(trades)
         result["fitness"] = fitness
@@ -131,16 +145,42 @@ class EvolutionEngine:
         return self.state.active_rules
 
     def get_strategy_adjustments(self) -> dict:
-        """진화 결과에 기반한 전략 조정값을 반환한다."""
-        adjustments = self.learner.get_adjustments()
+        """진화 결과에 기반한 전략 조정값을 반환한다.
 
-        # 활성 규칙에서 추가 조정
+        Returns:
+            dict with keys matching ExpertStrategy.WEIGHTS
+            (technical, pattern, sentiment, market, price_level)
+            plus threshold/risk keys for apply_adjustments()
+        """
+        # 1. 학습기 조정값 가져오기
+        raw_adj = self.learner.get_adjustments()
+
+        # 2. WEIGHTS 호환 형태로 변환
+        adjustments = {}
+
+        # 학습기의 threshold/risk 값도 포함
+        for key in ("buy_threshold_adj", "sell_threshold_adj",
+                     "stop_loss_adj", "take_profit_adj",
+                     "avoid_times", "prefer_times"):
+            if key in raw_adj and raw_adj[key]:
+                adjustments[key] = raw_adj[key]
+
+        # 3. 활성 규칙에서 조정값 수집 (모든 타입 처리)
         for rule in self.state.active_rules:
-            if rule.get("type") == "weight" and rule.get("active", True):
-                key = rule.get("target", "")
-                adj = rule.get("adjustment", 0)
-                if key in adjustments:
-                    adjustments[key] += adj
+            if not rule.get("active", True):
+                continue
+            target = rule.get("target", "")
+            adj = rule.get("adjustment", 0)
+
+            if isinstance(adj, (int, float)) and target:
+                adjustments[target] = adjustments.get(target, 0) + adj
+
+        # 4. 가중치 조정 (weight_history의 최신 조정)
+        if self.state.weight_history:
+            latest = self.state.weight_history[-1]
+            for key, val in latest.get("adjustments", {}).items():
+                if key in ("technical", "pattern", "sentiment", "market", "price_level"):
+                    adjustments[key] = adjustments.get(key, 0) + val
 
         return adjustments
 
