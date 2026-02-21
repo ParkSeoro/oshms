@@ -11,8 +11,10 @@
 - 지지/저항 & 가격 위치: 15%
 """
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 from api.kis_api import KISApi
 from config.settings import Settings
@@ -89,11 +91,14 @@ class ExpertStrategy(BaseStrategy):
         "price_level": 0.20,
     }
 
-    # 매매 임계값 (보수적 진입, 빠른 손절)
+    # 기본 매매 임계값 (종목별 동적으로 조정됨)
     STRONG_BUY_THRESHOLD = 0.25
     BUY_THRESHOLD = 0.15
     SELL_THRESHOLD = -0.08
     STRONG_SELL_THRESHOLD = -0.20
+
+    # 종목 프로필 파일
+    STOCK_PROFILES_FILE = Path("data/stock_profiles.json")
 
     def __init__(self, api: KISApi | None = None, settings: Settings | None = None):
         self.technical = TechnicalAnalyzer()
@@ -102,6 +107,9 @@ class ExpertStrategy(BaseStrategy):
         self.market_analyzer = MarketContextAnalyzer(api) if api else None
         self._market_ctx: MarketContext | None = None
         self._market_ctx_time: float = 0
+
+        # 종목별 동적 임계값 프로필
+        self._stock_profiles: dict = self._load_stock_profiles()
 
     def set_market_context(self, ctx: MarketContext) -> None:
         """시장 컨텍스트를 외부에서 설정한다."""
@@ -151,6 +159,126 @@ class ExpertStrategy(BaseStrategy):
 
         if changes:
             logger.info("진화 조정 적용: %s", " | ".join(changes))
+
+    # ──────────────────────────────────────────────
+    # 종목별 동적 임계값
+    # ──────────────────────────────────────────────
+
+    def _load_stock_profiles(self) -> dict:
+        """종목별 프로필을 로드한다."""
+        if self.STOCK_PROFILES_FILE.exists():
+            try:
+                return json.loads(self.STOCK_PROFILES_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {}
+
+    def _save_stock_profiles(self):
+        """종목별 프로필을 저장한다."""
+        try:
+            self.STOCK_PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            self.STOCK_PROFILES_FILE.write_text(
+                json.dumps(self._stock_profiles, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+        except Exception as e:
+            logger.warning("종목 프로필 저장 실패: %s", e)
+
+    def get_stock_thresholds(self, stock_code: str, atr: float = 0,
+                              price: float = 0) -> dict:
+        """종목별 동적 매매 임계값을 반환한다.
+
+        ATR(변동성) 기반 + 과거 거래 성과 학습 결과를 결합.
+        변동성이 큰 종목은 임계값을 높이고 (신중하게),
+        안정적인 종목은 낮춘다 (빠르게 진입).
+        """
+        profile = self._stock_profiles.get(stock_code, {})
+
+        # 1. ATR 기반 변동성 계수 (0.5 ~ 2.0)
+        volatility_mult = 1.0
+        if atr > 0 and price > 0:
+            atr_pct = atr / price * 100  # ATR을 %로 변환
+            if atr_pct > 3.0:
+                volatility_mult = 1.5  # 고변동: 기준 상향
+            elif atr_pct > 2.0:
+                volatility_mult = 1.2
+            elif atr_pct < 1.0:
+                volatility_mult = 0.7  # 저변동: 기준 하향
+            elif atr_pct < 1.5:
+                volatility_mult = 0.85
+
+        # 2. 학습된 조정값 (과거 거래 성과 기반)
+        learned_buy_adj = profile.get("buy_adj", 0)
+        learned_sell_adj = profile.get("sell_adj", 0)
+
+        # 3. 최종 임계값 계산
+        buy_thr = self.BUY_THRESHOLD * volatility_mult + learned_buy_adj
+        strong_buy_thr = self.STRONG_BUY_THRESHOLD * volatility_mult + learned_buy_adj
+        sell_thr = self.SELL_THRESHOLD * volatility_mult + learned_sell_adj
+        strong_sell_thr = self.STRONG_SELL_THRESHOLD * volatility_mult + learned_sell_adj
+
+        # 안전 범위 제한
+        buy_thr = max(0.05, min(0.45, buy_thr))
+        strong_buy_thr = max(0.10, min(0.55, strong_buy_thr))
+        sell_thr = max(-0.35, min(-0.03, sell_thr))
+        strong_sell_thr = max(-0.45, min(-0.10, strong_sell_thr))
+
+        return {
+            "buy": buy_thr,
+            "strong_buy": strong_buy_thr,
+            "sell": sell_thr,
+            "strong_sell": strong_sell_thr,
+            "volatility_mult": volatility_mult,
+        }
+
+    def learn_from_trade(self, stock_code: str, profit_rate: float,
+                          decision: str):
+        """거래 결과로 종목별 임계값을 학습한다.
+
+        승리: 현재 임계값이 적절 → 미세 강화
+        패배: 임계값 조정 필요
+          - 매수 후 손실 → 매수 기준 상향 (더 신중하게)
+          - 매도 놓침 → 매도 기준 하향 (더 빠르게)
+        """
+        profile = self._stock_profiles.get(stock_code, {
+            "buy_adj": 0, "sell_adj": 0,
+            "trades": 0, "wins": 0, "total_profit": 0,
+        })
+
+        profile["trades"] = profile.get("trades", 0) + 1
+        profile["total_profit"] = profile.get("total_profit", 0) + profit_rate
+
+        is_win = profit_rate > 0
+
+        if is_win:
+            profile["wins"] = profile.get("wins", 0) + 1
+
+        # 학습 속도 (거래 횟수에 따라 감쇠)
+        lr = max(0.005, 0.03 / (1 + profile["trades"] * 0.1))
+
+        if decision in ("BUY", "STRONG_BUY"):
+            if not is_win:
+                # 매수 후 손실 → 매수 기준 상향 (더 신중하게)
+                profile["buy_adj"] = profile.get("buy_adj", 0) + lr
+            else:
+                # 매수 후 수익 → 매수 기준 약간 하향 (좋은 진입)
+                profile["buy_adj"] = profile.get("buy_adj", 0) - lr * 0.3
+        elif decision in ("SELL", "STRONG_SELL"):
+            if profit_rate < -1:
+                # 큰 손실 매도 → 매도 기준 민감하게 (더 빠르게 팔기)
+                profile["sell_adj"] = profile.get("sell_adj", 0) + lr
+            elif is_win:
+                # 수익 매도 → 현재 기준 적절
+                profile["sell_adj"] = profile.get("sell_adj", 0) - lr * 0.2
+
+        # 조정값 안전 범위 제한
+        profile["buy_adj"] = max(-0.10, min(0.15, profile.get("buy_adj", 0)))
+        profile["sell_adj"] = max(-0.10, min(0.10, profile.get("sell_adj", 0)))
+
+        self._stock_profiles[stock_code] = profile
+
+        # 20건마다 저장
+        if profile["trades"] % 20 == 0:
+            self._save_stock_profiles()
 
     def analyze(self, stock_code: str, candles: list[dict], current_price: dict) -> Signal:
         """종합 분석을 수행하여 매매 신호를 생성한다."""
@@ -408,42 +536,52 @@ class ExpertStrategy(BaseStrategy):
         return min(1.0, confidence)
 
     def _make_decision(self, result: ExpertAnalysis) -> str:
-        """최종 매매 결정."""
+        """최종 매매 결정 (종목별 동적 임계값 사용)."""
         score = result.total_score
         confidence = result.confidence
 
-        # 시장 컨텍스트에 따른 임계값 조정
+        # 종목별 동적 임계값 계산
+        atr = result.technical.atr if result.technical else 0
+        thresholds = self.get_stock_thresholds(
+            result.stock_code, atr=atr, price=result.price)
+
+        buy_thr = thresholds["buy"]
+        strong_buy_thr = thresholds["strong_buy"]
+        sell_thr = thresholds["sell"]
+        strong_sell_thr = thresholds["strong_sell"]
+
+        # 시장 컨텍스트에 따른 추가 조정
         buy_adj = 0
         sell_adj = 0
         if result.market_ctx:
             if result.market_ctx.regime == "trending_down":
-                buy_adj = 0.12  # 하락장에서 매수 기준 대폭 상향
-                sell_adj = -0.05  # 매도는 빠르게
+                buy_adj = 0.12
+                sell_adj = -0.05
             elif result.market_ctx.regime == "volatile":
-                buy_adj = 0.08  # 변동성 장에서 매수 기준 상향
+                buy_adj = 0.08
                 sell_adj = -0.03
             elif result.market_ctx.regime == "trending_up":
-                buy_adj = -0.03  # 상승장에서 매수 기준 약간 하향
+                buy_adj = -0.03
             if not result.market_ctx.trading_ok:
                 return "HOLD"
 
-        # 거래량 미달 시 매수 보류 (거래량 < 평균 0.8배면 유동성 부족)
+        # 거래량 미달 시 매수 보류
         if result.technical and result.technical.volume_ratio < 0.8:
             if score > 0:
-                return "HOLD"  # 매수 신호지만 거래량 부족
+                return "HOLD"
 
-        # 장 시작 직후(09:00~09:15) 변동성 구간 매수 제한
+        # 장 시작 직후 변동성 구간
         now_str = datetime.now().strftime("%H:%M")
         if "09:00" <= now_str <= "09:15" and score > 0:
-            buy_adj += 0.10  # 장 초반엔 더 높은 기준 적용
+            buy_adj += 0.10
 
-        if score >= self.STRONG_BUY_THRESHOLD + buy_adj and confidence >= 0.35:
+        if score >= strong_buy_thr + buy_adj and confidence >= 0.35:
             return "STRONG_BUY"
-        elif score >= self.BUY_THRESHOLD + buy_adj and confidence >= 0.25:
+        elif score >= buy_thr + buy_adj and confidence >= 0.25:
             return "BUY"
-        elif score <= self.STRONG_SELL_THRESHOLD + sell_adj and confidence >= 0.25:
+        elif score <= strong_sell_thr + sell_adj and confidence >= 0.25:
             return "STRONG_SELL"
-        elif score <= self.SELL_THRESHOLD + sell_adj and confidence >= 0.15:
+        elif score <= sell_thr + sell_adj and confidence >= 0.15:
             return "SELL"
         return "HOLD"
 

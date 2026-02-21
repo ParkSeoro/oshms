@@ -359,8 +359,10 @@ class AutoTrader:
         # 2. 익절 (목표 수익 달성)
         for code in self.order_manager.check_take_profit():
             try:
+                pos = self.order_manager.positions.get(code)
+                pr = pos.profit_rate if pos else 0
                 self.order_manager.execute_sell(code, "익절")
-                self._on_trade_completed()
+                self._on_trade_completed(code, pr, "SELL")
             except Exception as e:
                 logger.error("[%s] 익절 매도 실패: %s", code, e)
 
@@ -373,10 +375,11 @@ class AutoTrader:
 
                 # 손절 기준을 더 보수적으로: -3% 이하만 실제 손절
                 if pos.profit_rate <= -3.0:
+                    pr = pos.profit_rate
                     self.order_manager.execute_sell(code, "손절")
                     self._cooldown_stocks[code] = time.time() + self._COOLDOWN_SECONDS
                     logger.info("[%s] 쿨다운 등록: %d초간 재매수 금지", code, self._COOLDOWN_SECONDS)
-                    self._on_trade_completed()
+                    self._on_trade_completed(code, pr, "BUY")  # 매수 후 손실 → 매수 기준 학습
                 else:
                     logger.info(
                         "[%s] 손절 대기: %.2f%% (기준: -3.0%% 미만 시 매도)",
@@ -412,9 +415,14 @@ class AutoTrader:
                 except Exception as e:
                     logger.error("[%s] 장마감 청산 실패: %s", code, e)
 
-    def _on_trade_completed(self):
-        """매도 완료 시 진화 카운터 증가."""
+    def _on_trade_completed(self, stock_code: str = "", profit_rate: float = 0,
+                               decision: str = ""):
+        """매도 완료 시 진화 카운터 증가 + 종목별 학습."""
         self._trades_since_evolution += 1
+
+        # 종목별 임계값 학습
+        if stock_code and isinstance(self.strategy, ExpertStrategy):
+            self.strategy.learn_from_trade(stock_code, profit_rate, decision)
 
     def _analyze_and_trade(self, stock_code: str) -> None:
         """종목을 분석하고 매매를 실행한다."""
@@ -519,8 +527,9 @@ class AutoTrader:
 
                 # 수익인 경우만 전략 매도 (손실 시 회복 대기)
                 if pos.profit_rate > 0.3 and signal.strength >= 0.15:
+                    pr = pos.profit_rate
                     self.order_manager.execute_sell(stock_code, signal.reason)
-                    self._on_trade_completed()
+                    self._on_trade_completed(stock_code, pr, "SELL")
                 elif pos.profit_rate > 0:
                     logger.info("  → 소폭 수익(%.2f%%) - 추가 상승 대기", pos.profit_rate)
                 else:
