@@ -99,9 +99,13 @@ class OshmsApp:
         ("v2.6", "진화 엔진 완전체 (실제 학습 적용)", True),
         ("v2.6", "전체 시장 스캔 (종목 자동 발굴)", True),
         ("v2.6", "프리미엄 다크 테마 v2", True),
-        ("v2.7", "실시간 차트 시각화", False),
-        ("v2.7", "포트폴리오 리밸런싱", False),
+        ("v2.7", "분석 기반 목표가 매도 (상승여력 판단)", True),
+        ("v2.7", "호가창 분석 (매수/매도 세력)", True),
+        ("v2.7", "업종 로테이션 분석 (22개 섹터)", True),
+        ("v2.7", "강화 백테스터 (몬테카를로/워크포워드)", True),
+        ("v2.7", "실시간 차트 시각화 엔진", True),
         ("v2.8", "텔레그램 알림 봇", False),
+        ("v2.8", "포트폴리오 리밸런싱", False),
         ("v3.0", "안드로이드 앱 (PWA)", False),
         ("v3.0", "멀티 계좌 지원", False),
     ]
@@ -377,15 +381,17 @@ class OshmsApp:
                                            bg=c["bg"], fg=c["dim"])
         self.holdings_count_lbl.pack(side=tk.RIGHT)
 
-        cols = ("종목명", "시장", "수량", "평균가", "현재가", "손익", "수익률")
+        cols = ("종목명", "수량", "평균가", "현재가", "수익률", "목표가", "여력")
         tree_card = self._make_card(inner)
         tree_card.pack(fill=tk.X, padx=28, pady=(0, 4))
         self.holdings_tree = ttk.Treeview(tree_card, columns=cols,
                                           show="headings", height=5)
+        col_widths = {"종목명": 130, "수량": 65, "평균가": 95, "현재가": 95,
+                      "수익률": 80, "목표가": 95, "여력": 70}
         for col in cols:
             self.holdings_tree.heading(col, text=col)
-            w = 140 if col == "종목명" else 70 if col == "시장" else 100
-            anchor = tk.W if col in ("종목명", "시장") else tk.E
+            w = col_widths.get(col, 90)
+            anchor = tk.W if col == "종목명" else tk.E
             self.holdings_tree.column(col, width=w, anchor=anchor)
         tree_sb = ttk.Scrollbar(tree_card, orient=tk.VERTICAL,
                                 command=self.holdings_tree.yview)
@@ -572,38 +578,75 @@ class OshmsApp:
     # 종목분석 탭
     # ═══════════════════════════════════════════════
 
+    # 주요 종목 리스트 (코드, 이름, 시장)
+    POPULAR_STOCKS = [
+        # ── 국내 대형주 ──
+        ("005930", "삼성전자", "KR"),
+        ("000660", "SK하이닉스", "KR"),
+        ("373220", "LG에너지솔루션", "KR"),
+        ("005380", "현대차", "KR"),
+        ("000270", "기아", "KR"),
+        ("068270", "셀트리온", "KR"),
+        ("035420", "NAVER", "KR"),
+        ("035720", "카카오", "KR"),
+        ("051910", "LG화학", "KR"),
+        ("006400", "삼성SDI", "KR"),
+        ("105560", "KB금융", "KR"),
+        ("055550", "신한지주", "KR"),
+        ("003670", "포스코퓨처엠", "KR"),
+        ("012330", "현대모비스", "KR"),
+        ("207940", "삼성바이오로직스", "KR"),
+        ("247540", "에코프로비엠", "KR"),
+        ("042700", "한미반도체", "KR"),
+        ("003550", "LG", "KR"),
+        ("034730", "SK", "KR"),
+        ("028260", "삼성물산", "KR"),
+        # ── 해외 대형주 ──
+        ("AAPL", "애플", "NASD"),
+        ("MSFT", "마이크로소프트", "NASD"),
+        ("NVDA", "엔비디아", "NASD"),
+        ("GOOGL", "구글", "NASD"),
+        ("AMZN", "아마존", "NASD"),
+        ("TSLA", "테슬라", "NASD"),
+        ("META", "메타", "NASD"),
+        ("TSM", "TSMC", "NYSE"),
+        ("BRK.B", "버크셔해서웨이", "NYSE"),
+        ("V", "비자", "NYSE"),
+    ]
+
     def _build_analysis_tab(self):
         frame = tk.Frame(self.notebook, bg=self.c["bg"])
         self.notebook.add(frame, text="   종목분석   ")
         c = self.c
 
+        # ── 종목 선택 카드 ──
         search_card = self._make_card(frame, padx=22, pady=18)
-        search_card.pack(fill=tk.X, padx=24, pady=(18, 10))
+        search_card.pack(fill=tk.X, padx=24, pady=(18, 6))
 
+        # Row 1: 시장 + 빠른 종목 선택 드롭다운
         r1 = tk.Frame(search_card, bg=c["card"])
         r1.pack(fill=tk.X, pady=(0, 10))
 
         self._make_label(r1, "시장").pack(side=tk.LEFT)
         self.analyze_market_var = tk.StringVar(value="KR")
         mkt_cb = ttk.Combobox(r1, textvariable=self.analyze_market_var,
-                              width=10,
+                              width=8,
                               values=["KR", "NASD", "NYSE", "AMEX", "SEHK", "TKSE"],
                               state="readonly")
         mkt_cb.pack(side=tk.LEFT, padx=(8, 18))
 
-        self._make_label(r1, "코드").pack(side=tk.LEFT)
-        self.analyze_code = self._make_entry(r1, width=10)
-        self.analyze_code.pack(side=tk.LEFT, padx=(8, 18))
-        self.analyze_code.insert(0, "005930")
-
-        self._make_label(r1, "종목명").pack(side=tk.LEFT)
-        self.analyze_name = self._make_entry(r1, width=12)
-        self.analyze_name.pack(side=tk.LEFT, padx=(8, 18))
-        self.analyze_name.insert(0, "삼성전자")
+        self._make_label(r1, "종목 선택").pack(side=tk.LEFT)
+        self._stock_select_var = tk.StringVar()
+        stock_values = [f"{s[0]} {s[1]}" for s in self.POPULAR_STOCKS]
+        self._stock_combo = ttk.Combobox(r1, textvariable=self._stock_select_var,
+                                         width=22, values=stock_values)
+        self._stock_combo.set("005930 삼성전자")
+        self._stock_combo.pack(side=tk.LEFT, padx=(8, 10))
+        self._stock_combo.bind("<<ComboboxSelected>>", self._on_stock_selected)
 
         self.analyze_btn = self._make_button(r1, "  AI 분석  ",
                                               self._run_analysis, c["accent2"])
-        self.analyze_btn.pack(side=tk.LEFT, padx=(4, 8))
+        self.analyze_btn.pack(side=tk.LEFT, padx=(8, 6))
         self.analyze_stop_btn = self._make_button(r1, " 중지 ",
                                                    self._stop_analysis,
                                                    c["red_dim"])
@@ -611,12 +654,44 @@ class OshmsApp:
                                          font=(self.FONT, 10))
         self.analyze_stop_btn.pack(side=tk.LEFT)
 
-        tk.Label(search_card,
-                 text="KR: 005930(삼성전자)  |  NASD: AAPL(애플), TSLA  |  NYSE: BRK.B  |  SEHK: 00700",
-                 font=(self.FONT, 9), bg=c["card"], fg=c["dim2"]).pack(anchor=tk.W)
+        # Row 2: 직접 입력
+        r2 = tk.Frame(search_card, bg=c["card"])
+        r2.pack(fill=tk.X, pady=(0, 8))
 
+        self._make_label(r2, "직접 입력 →", color=c["dim"]).pack(side=tk.LEFT)
+        self._make_label(r2, "코드").pack(side=tk.LEFT, padx=(10, 0))
+        self.analyze_code = self._make_entry(r2, width=10)
+        self.analyze_code.pack(side=tk.LEFT, padx=(6, 14))
+        self.analyze_code.insert(0, "005930")
+
+        self._make_label(r2, "종목명").pack(side=tk.LEFT)
+        self.analyze_name = self._make_entry(r2, width=12)
+        self.analyze_name.pack(side=tk.LEFT, padx=(6, 0))
+        self.analyze_name.insert(0, "삼성전자")
+
+        # Row 3: 섹터별 빠른 선택 버튼
+        r3 = tk.Frame(search_card, bg=c["card"])
+        r3.pack(fill=tk.X, pady=(4, 0))
+        tk.Label(r3, text="빠른선택", font=(self.FONT, 9),
+                 bg=c["card"], fg=c["dim2"]).pack(side=tk.LEFT, padx=(0, 8))
+
+        sector_stocks = [
+            ("반도체", "005930"), ("2차전지", "373220"), ("바이오", "068270"),
+            ("인터넷", "035420"), ("자동차", "005380"), ("금융", "105560"),
+            ("NVDA", "NVDA"), ("TSLA", "TSLA"), ("AAPL", "AAPL"),
+        ]
+        for label, code in sector_stocks:
+            btn = tk.Label(r3, text=label, font=(self.FONT, 9),
+                          bg=c["accent_soft"], fg=c["accent"],
+                          padx=8, pady=2, cursor="hand2")
+            btn.pack(side=tk.LEFT, padx=2)
+            btn.bind("<Button-1>", lambda e, c_=code: self._quick_select_stock(c_))
+            btn.bind("<Enter>", lambda e, w=btn: w.configure(bg=c["accent"], fg="#ffffff"))
+            btn.bind("<Leave>", lambda e, w=btn: w.configure(bg=c["accent_soft"], fg=c["accent"]))
+
+        # ── 결과 영역 ──
         result_card = self._make_card(frame)
-        result_card.pack(fill=tk.BOTH, expand=True, padx=24, pady=(4, 18))
+        result_card.pack(fill=tk.BOTH, expand=True, padx=24, pady=(6, 18))
         self.analysis_text = scrolledtext.ScrolledText(
             result_card, font=(self.MONO, 10), wrap=tk.WORD,
             bg=c["bg"], fg=c["fg2"], relief=tk.FLAT,
@@ -625,6 +700,44 @@ class OshmsApp:
             highlightthickness=0,
         )
         self.analysis_text.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+
+    def _on_stock_selected(self, event=None):
+        """드롭다운에서 종목 선택 시 코드/이름/시장 자동 입력."""
+        sel = self._stock_select_var.get()
+        if not sel:
+            return
+        parts = sel.split(" ", 1)
+        code = parts[0]
+        name = parts[1] if len(parts) > 1 else code
+
+        # POPULAR_STOCKS에서 시장 찾기
+        market = "KR"
+        for s_code, s_name, s_market in self.POPULAR_STOCKS:
+            if s_code == code:
+                market = s_market
+                name = s_name
+                break
+
+        self.analyze_market_var.set(market)
+        self.analyze_code.delete(0, tk.END)
+        self.analyze_code.insert(0, code)
+        self.analyze_name.delete(0, tk.END)
+        self.analyze_name.insert(0, name)
+
+    def _quick_select_stock(self, code: str):
+        """빠른선택 버튼 클릭 시."""
+        for s_code, s_name, s_market in self.POPULAR_STOCKS:
+            if s_code == code:
+                self.analyze_market_var.set(s_market)
+                self.analyze_code.delete(0, tk.END)
+                self.analyze_code.insert(0, s_code)
+                self.analyze_name.delete(0, tk.END)
+                self.analyze_name.insert(0, s_name)
+                self._stock_select_var.set(f"{s_code} {s_name}")
+                return
+        # 리스트에 없으면 코드만 입력
+        self.analyze_code.delete(0, tk.END)
+        self.analyze_code.insert(0, code)
 
     # ═══════════════════════════════════════════════
     # AI 어시스턴트 탭 (NEW)
@@ -1396,6 +1509,14 @@ class OshmsApp:
                 except Exception:
                     pass
                 balance["holdings"] = kr_holdings
+                # 트레이더 보유 종목에서 목표가/여력 정보 병합
+                if self._trader and hasattr(self._trader, "order_manager"):
+                    om = self._trader.order_manager
+                    for h in kr_holdings:
+                        pos = om.positions.get(h.get("stock_code", ""))
+                        if pos:
+                            h["target_price"] = pos.target_price
+                            h["estimated_upside"] = pos.estimated_upside
                 self.root.after(0, lambda: self._update_dashboard(balance))
             except Exception as e:
                 err_msg = str(e)
@@ -1426,10 +1547,15 @@ class OshmsApp:
         for item in self.holdings_tree.get_children():
             self.holdings_tree.delete(item)
         for h in holdings:
+            target = h.get("target_price", 0)
+            upside = h.get("estimated_upside", 0)
+            target_str = f"{target:,.0f}" if target else "--"
+            upside_str = f"{upside:+.1f}%" if target else "--"
             self.holdings_tree.insert("", tk.END, values=(
-                h["stock_name"], h.get("market", "KR"), h["quantity"],
+                h["stock_name"], h["quantity"],
                 f"{h['avg_price']:,.0f}", f"{h['current_price']:,.0f}",
-                f"{h['profit_loss']:+,.0f}", f"{h['profit_rate']:+.2f}%"))
+                f"{h['profit_rate']:+.2f}%",
+                target_str, upside_str))
 
         self._load_trade_history()
         self._load_evolution_details()
@@ -1634,6 +1760,27 @@ class OshmsApp:
                 if cancel.is_set():
                     return
                 result = f"[시장: {market}]\n" + analysis.summary()
+
+                # ── 목표가 & 상승여력 분석 ──
+                if market == "KR":
+                    upside_info = strategy.estimate_upside(code, candles, current_price)
+                    target_p = upside_info.get("target_price", 0)
+                    upside_pct = upside_info.get("upside_pct", 0)
+                    trend_alive = upside_info.get("trend_alive", False)
+                    momentum = upside_info.get("momentum_score", 0)
+                    should_hold = upside_info.get("should_hold", False)
+                    up_reason = upside_info.get("reason", "")
+
+                    result += "\n\n══ 목표가 & 상승여력 분석 ══"
+                    result += f"\n  목표가: {target_p:,}원" if target_p else "\n  목표가: 산출 불가"
+                    price_now = current_price.get("price", 0)
+                    if price_now and target_p:
+                        result += f" (현재가 대비 {upside_pct:+.1f}%)"
+                    result += f"\n  추세 상태: {'살아있음' if trend_alive else '약화/소진'}"
+                    result += f"\n  모멘텀 점수: {momentum:+.3f}"
+                    result += f"\n  종합 판단: {'보유/매수 유지' if should_hold else '매도 고려'}"
+                    if up_reason:
+                        result += f"\n  근거: {up_reason}"
 
                 t = analysis.technical
                 if t:
