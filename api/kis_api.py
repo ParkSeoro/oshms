@@ -423,6 +423,47 @@ class KISApi:
         return {"success": False, "message": "서버 오류 (재시도 초과)"}
 
     # ──────────────────────────────────────────────
+    # 호가 조회
+    # ──────────────────────────────────────────────
+
+    def get_orderbook(self, stock_code: str) -> dict[str, Any]:
+        """호가 정보를 조회한다."""
+        tr_id = "FHKST01010200"
+        url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+        params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code}
+
+        resp = self.session.get(url, headers=self._headers(tr_id), params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("rt_cd") != "0":
+            return {}
+
+        output1 = data.get("output1", {})
+        output2 = data.get("output2", {})
+
+        asks = []  # 매도호가 (높은 가격부터)
+        bids = []  # 매수호가 (높은 가격부터)
+
+        for i in range(1, 11):
+            ask_price = int(output1.get(f"askp{i}", 0))
+            ask_vol = int(output1.get(f"askp_rsqn{i}", 0))
+            bid_price = int(output1.get(f"bidp{i}", 0))
+            bid_vol = int(output1.get(f"bidp_rsqn{i}", 0))
+            if ask_price > 0:
+                asks.append({"price": ask_price, "volume": ask_vol})
+            if bid_price > 0:
+                bids.append({"price": bid_price, "volume": bid_vol})
+
+        return {
+            "asks": asks,
+            "bids": bids,
+            "total_ask_volume": int(output2.get("total_askp_rsqn", 0)),
+            "total_bid_volume": int(output2.get("total_bidp_rsqn", 0)),
+            "expected_price": int(output2.get("antc_cnpr", 0)),
+        }
+
+    # ──────────────────────────────────────────────
     # 잔고 조회
     # ──────────────────────────────────────────────
 
