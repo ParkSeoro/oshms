@@ -1,6 +1,6 @@
 """OSHMS 데스크톱 GUI 앱.
 
-Tkinter 기반 메인 윈도우. 토스/로빈후드 영감 소프트 다크 테마.
+Tkinter 기반 메인 윈도우. Bloomberg Terminal / Arc 영감 프리미엄 다크 테마 v3.
 탭 구성:
   - 대시보드: 자산 현황, 누적 통계, 진화 상세, 로드맵
   - 자동매매: 시작/중지, 실시간 로그, 해외주식 지원
@@ -23,50 +23,50 @@ class OshmsApp:
 
     SETTINGS_FILE = Path("config/user_settings.json")
 
-    # ──── 프리미엄 다크 테마 (Trading212 / Toss 영감) ────
+    # ──── 프리미엄 다크 테마 v3 (Bloomberg Terminal / Arc 영감) ────
     COLORS = {
-        # 배경 계열 (깊이감 있는 네이비 다크)
-        "bg": "#13151c",
-        "bg2": "#1a1d28",
-        "surface": "#222637",
-        "card": "#282d42",
-        "card_hover": "#303652",
-        "border": "#3a4060",
-        "border_accent": "#6c8cff",
+        # 배경 계열 (순수 다크 — 깊이감 + OLED 친화)
+        "bg": "#0c0e14",
+        "bg2": "#12141c",
+        "surface": "#1a1e2a",
+        "card": "#1e2230",
+        "card_hover": "#262b3c",
+        "border": "#2a3048",
+        "border_accent": "#5b7cff",
 
-        # 텍스트 계열 (밝고 선명하게)
-        "fg": "#f0f2f8",
-        "fg2": "#c0c6dc",
-        "dim": "#8890ac",
-        "dim2": "#5e6484",
+        # 텍스트 계열 (고대비, 가독성 극대화)
+        "fg": "#edf0f7",
+        "fg2": "#b0b8d0",
+        "dim": "#7880a0",
+        "dim2": "#505878",
 
-        # 액센트 (프리미엄 블루)
-        "accent": "#6c8cff",
-        "accent2": "#a78bfa",
-        "accent_soft": "#2e3a68",
-        "accent_hover": "#8da4ff",
-        "accent_glow": "#1e2a56",
+        # 액센트 (일렉트릭 블루 — 더 선명)
+        "accent": "#5b7cff",
+        "accent2": "#9b7dff",
+        "accent_soft": "#1e2850",
+        "accent_hover": "#7b96ff",
+        "accent_glow": "#162040",
 
-        # 상태 색상 (선명하고 구분 좋은)
-        "green": "#22c55e",
-        "green_bg": "#162d20",
-        "green_dim": "#16a34a",
-        "red": "#ef4444",
-        "red_bg": "#2d1616",
-        "red_dim": "#dc2626",
-        "yellow": "#fbbf24",
-        "orange": "#f97316",
+        # 상태 색상 (네온 톤 — 한눈에 식별)
+        "green": "#00d68f",
+        "green_bg": "#0a2820",
+        "green_dim": "#00b377",
+        "red": "#ff4d6a",
+        "red_bg": "#2a0f18",
+        "red_dim": "#e63956",
+        "yellow": "#ffc554",
+        "orange": "#ff8a3d",
 
         # 입력 필드
-        "input_bg": "#1a1e2e",
-        "input_border": "#3a4060",
+        "input_bg": "#141822",
+        "input_border": "#2a3048",
 
         # 채팅
-        "chat_user_bg": "#2e3a68",
-        "chat_ai_bg": "#1e2d22",
+        "chat_user_bg": "#1e2850",
+        "chat_ai_bg": "#0a2820",
 
         # 그림자/글로우
-        "shadow": "#0a0c12",
+        "shadow": "#060810",
     }
 
     MARKETS = {
@@ -87,7 +87,7 @@ class OshmsApp:
         "TKSE": ("09:00~15:00 (KST)", False),
     }
 
-    VERSION = "2.7.0"
+    VERSION = "2.8.0"
 
     ROADMAP = [
         ("v2.4", "AI 분석 (OpenAI/Claude)", True),
@@ -104,8 +104,10 @@ class OshmsApp:
         ("v2.7", "업종 로테이션 분석 (22개 섹터)", True),
         ("v2.7", "강화 백테스터 (몬테카를로/워크포워드)", True),
         ("v2.7", "실시간 차트 시각화 엔진", True),
-        ("v2.8", "텔레그램 알림 봇", False),
-        ("v2.8", "포트폴리오 리밸런싱", False),
+        ("v2.8", "프리미엄 다크 테마 v3 (Bloomberg/Arc)", True),
+        ("v2.8", "종목분석 드롭다운 + 섹터 빠른선택", True),
+        ("v2.9", "텔레그램 알림 봇", False),
+        ("v2.9", "포트폴리오 리밸런싱", False),
         ("v3.0", "안드로이드 앱 (PWA)", False),
         ("v3.0", "멀티 계좌 지원", False),
     ]
@@ -170,10 +172,15 @@ class OshmsApp:
         return inner, canvas
 
     def _make_card(self, parent, **kw):
-        """프리미엄 카드 프레임."""
+        """프리미엄 카드 프레임 — 미세한 보더 + 라운드 느낌."""
         f = tk.Frame(parent, bg=self.c["card"],
                      highlightbackground=self.c["border"],
                      highlightthickness=1, **kw)
+        # 카드 내부 여백이 없으면 기본 추가
+        if "padx" not in kw:
+            f.configure(padx=16)
+        if "pady" not in kw:
+            f.configure(pady=12)
         return f
 
     def _make_entry(self, parent, var=None, width=25, show="", **kw):
@@ -191,11 +198,11 @@ class OshmsApp:
         return e
 
     def _make_button(self, parent, text, command, color=None, outline=False, **kw):
-        """프리미엄 버튼 (호버 효과 포함)."""
+        """프리미엄 버튼 — 부드러운 호버 전환."""
         bg = color or self.c["accent"]
         if outline:
             fg_color = bg
-            bg_color = self.c["card"]
+            bg_color = self.c["bg2"]
         else:
             fg_color = "#ffffff"
             bg_color = bg
@@ -206,15 +213,20 @@ class OshmsApp:
                         activebackground=self.c.get("accent_hover", bg),
                         activeforeground="#ffffff",
                         relief=tk.FLAT, padx=22, pady=8,
-                        cursor="hand2", **kw)
+                        cursor="hand2",
+                        borderwidth=0,
+                        highlightthickness=0,
+                        **kw)
 
-        # 호버 효과
+        hover_bg = self.c.get("accent_hover", bg)
+        normal_bg = bg_color
+
         def _on_enter(e):
-            if btn.cget("state") != "disabled":
-                btn.config(bg=self.c.get("accent_hover", bg))
+            if str(btn.cget("state")) != "disabled":
+                btn.config(bg=hover_bg)
         def _on_leave(e):
-            if btn.cget("state") != "disabled":
-                btn.config(bg=bg_color)
+            if str(btn.cget("state")) != "disabled":
+                btn.config(bg=normal_bg)
         btn.bind("<Enter>", _on_enter)
         btn.bind("<Leave>", _on_leave)
 
@@ -228,14 +240,14 @@ class OshmsApp:
                         bg=parent.cget("bg"), fg=fg, **kw)
 
     def _section_header(self, parent, text):
-        """섹션 헤더 - 프리미엄 스타일."""
+        """섹션 헤더 — 왼쪽 액센트 바 + 구분선."""
         f = tk.Frame(parent, bg=parent.cget("bg"))
-        f.pack(fill=tk.X, padx=28, pady=(28, 10))
-        # 왼쪽 액센트 바
-        bar = tk.Frame(f, bg=self.c["accent"], width=3, height=18)
+        f.pack(fill=tk.X, padx=28, pady=(24, 10))
+        # 왼쪽 액센트 바 (굵은 3px)
+        bar = tk.Frame(f, bg=self.c["accent"], width=4, height=20)
         bar.pack(side=tk.LEFT, padx=(0, 12))
         bar.pack_propagate(False)
-        tk.Label(f, text=text, font=(self.FONT, 13, "bold"),
+        tk.Label(f, text=text, font=(self.FONT, 12, "bold"),
                  bg=f.cget("bg"), fg=self.c["fg"]).pack(side=tk.LEFT)
         sep = tk.Frame(f, bg=self.c["border"], height=1)
         sep.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(16, 0), pady=1)
@@ -248,44 +260,49 @@ class OshmsApp:
         c = self.c
         self.root.configure(bg=c["bg"])
 
-        # ─── 헤더 ───
-        self.header = tk.Frame(self.root, bg=c["bg2"], height=60)
+        # ─── 헤더 (글래스모피즘 스타일) ───
+        self.header = tk.Frame(self.root, bg=c["bg2"], height=56)
         self.header.pack(fill=tk.X)
         self.header.pack_propagate(False)
 
-        # 하단 액센트 라인
-        header_line = tk.Frame(self.root, bg=c["accent"], height=2)
-        header_line.pack(fill=tk.X)
-
         logo_f = tk.Frame(self.header, bg=c["bg2"])
-        logo_f.pack(side=tk.LEFT, padx=24, pady=12)
+        logo_f.pack(side=tk.LEFT, padx=28, pady=10)
 
-        # 로고 뱃지 (그라데이션 느낌)
-        badge = tk.Frame(logo_f, bg=c["accent"], padx=10, pady=3)
-        badge.pack(side=tk.LEFT, padx=(0, 12))
-        tk.Label(badge, text="O", font=(self.FONT, 14, "bold"),
+        # 로고 뱃지 (둥근 사각형 느낌)
+        badge = tk.Frame(logo_f, bg=c["accent"], padx=8, pady=2)
+        badge.pack(side=tk.LEFT, padx=(0, 14))
+        tk.Label(badge, text=" O ", font=(self.FONT, 13, "bold"),
                  bg=c["accent"], fg="#ffffff").pack()
 
-        tk.Label(logo_f, text="OSHMS", font=(self.FONT, 18, "bold"),
+        tk.Label(logo_f, text="OSHMS", font=(self.FONT, 17, "bold"),
                  bg=c["bg2"], fg=c["fg"]).pack(side=tk.LEFT)
-        tk.Label(logo_f, text=f"v{self.VERSION}", font=(self.FONT, 9),
-                 bg=c["bg2"], fg=c["dim"]).pack(side=tk.LEFT, padx=(10, 0), pady=(6, 0))
+        tk.Label(logo_f, text=f" v{self.VERSION}",
+                 font=(self.MONO, 9), bg=c["bg2"],
+                 fg=c["accent"]).pack(side=tk.LEFT, pady=(4, 0))
+        tk.Label(logo_f, text="  AI Trading",
+                 font=(self.FONT, 10), bg=c["bg2"],
+                 fg=c["dim"]).pack(side=tk.LEFT, padx=(6, 0), pady=(3, 0))
 
-        # 상태 표시
+        # 오른쪽 상태 패널
         status_f = tk.Frame(self.header, bg=c["bg2"])
-        status_f.pack(side=tk.RIGHT, padx=20, pady=10)
-        self.evo_label = tk.Label(status_f, text="", font=(self.FONT, 9),
+        status_f.pack(side=tk.RIGHT, padx=24, pady=10)
+
+        # 진화 세대 뱃지
+        self.evo_label = tk.Label(status_f, text="", font=(self.MONO, 9, "bold"),
                                   bg=c["bg2"], fg=c["yellow"])
-        self.evo_label.pack(side=tk.LEFT, padx=(0, 20))
-        self.status_dot = tk.Label(status_f, text="●", font=("", 12),
+        self.evo_label.pack(side=tk.LEFT, padx=(0, 16))
+
+        # 상태 표시 (파란 점 + 텍스트)
+        self.status_dot = tk.Label(status_f, text="●", font=("", 10),
                                    bg=c["bg2"], fg=c["dim2"])
-        self.status_dot.pack(side=tk.LEFT, padx=(0, 6))
+        self.status_dot.pack(side=tk.LEFT, padx=(0, 5))
         self.status_label = tk.Label(status_f, text="대기중",
-                                     font=(self.FONT, 11, "bold"),
+                                     font=(self.FONT, 10, "bold"),
                                      bg=c["bg2"], fg=c["dim"])
         self.status_label.pack(side=tk.LEFT)
 
-        # 헤더 하단 분리선
+        # 헤더 하단 그라데이션 라인 (accent → transparent)
+        tk.Frame(self.root, bg=c["accent"], height=2).pack(fill=tk.X)
         tk.Frame(self.root, bg=c["border"], height=1).pack(fill=tk.X)
 
         # ─── 탭 노트북 ───
@@ -311,7 +328,7 @@ class OshmsApp:
         # ── 자산 카드 행 ──
         self._section_header(inner, "자산 현황")
         cards_f = tk.Frame(inner, bg=c["bg"])
-        cards_f.pack(fill=tk.X, padx=28, pady=(0, 4))
+        cards_f.pack(fill=tk.X, padx=28, pady=(0, 6))
 
         self.card_labels = {}
         items = [
@@ -323,16 +340,16 @@ class OshmsApp:
         ]
         for i, (key, title, default, color) in enumerate(items):
             card = self._make_card(cards_f, padx=18, pady=14)
-            card.grid(row=0, column=i, padx=(0, 10), sticky="nsew")
+            card.grid(row=0, column=i, padx=(0, 8), sticky="nsew")
             cards_f.columnconfigure(i, weight=1)
-            # 상단 액센트 라인
-            tk.Frame(card, bg=color, height=3).pack(fill=tk.X, pady=(0, 10))
+            # 상단 액센트 라인 (더 눈에 띄게)
+            tk.Frame(card, bg=color, height=3).pack(fill=tk.X, pady=(0, 12))
             tk.Label(card, text=title, font=(self.FONT, 9),
                      bg=c["card"], fg=c["dim"]).pack(anchor=tk.W)
             lbl = tk.Label(card, text=default,
-                          font=(self.FONT, 17, "bold"),
+                          font=(self.MONO, 18, "bold"),
                           bg=c["card"], fg=c["fg"])
-            lbl.pack(anchor=tk.W, pady=(6, 0))
+            lbl.pack(anchor=tk.W, pady=(8, 0))
             self.card_labels[key] = lbl
 
         # ── 누적 통계 ──
@@ -342,21 +359,21 @@ class OshmsApp:
 
         self.stat_labels = {}
         stat_items = [
-            ("cum_trades", "총 거래", "0 건"),
-            ("cum_wins", "승률", "--"),
-            ("cum_profit", "누적 수익", "0 원"),
-            ("best_trade", "최고 수익", "0 원"),
-            ("evo_gen", "진화 세대", "#0"),
+            ("cum_trades", "총 거래", "0 건", c["fg"]),
+            ("cum_wins", "승률", "--", c["green"]),
+            ("cum_profit", "누적 수익", "0 원", c["fg"]),
+            ("best_trade", "최고 수익", "0 원", c["yellow"]),
+            ("evo_gen", "진화 세대", "#0", c["accent2"]),
         ]
-        for i, (key, title, default) in enumerate(stat_items):
+        for i, (key, title, default, val_color) in enumerate(stat_items):
             card = self._make_card(stats_f, padx=16, pady=12)
-            card.grid(row=0, column=i, padx=(0, 10), sticky="nsew")
+            card.grid(row=0, column=i, padx=(0, 8), sticky="nsew")
             stats_f.columnconfigure(i, weight=1)
             tk.Label(card, text=title, font=(self.FONT, 9),
                      bg=c["card"], fg=c["dim"]).pack(anchor=tk.W)
-            lbl = tk.Label(card, text=default, font=(self.FONT, 14, "bold"),
-                          bg=c["card"], fg=c["fg"])
-            lbl.pack(anchor=tk.W, pady=(4, 0))
+            lbl = tk.Label(card, text=default, font=(self.MONO, 15, "bold"),
+                          bg=c["card"], fg=val_color)
+            lbl.pack(anchor=tk.W, pady=(6, 0))
             self.stat_labels[key] = lbl
 
         # ── 진화 엔진 상태 ──
@@ -373,13 +390,13 @@ class OshmsApp:
         self._load_evolution_details()
 
         # ── 보유 종목 ──
+        self._section_header(inner, "보유 종목")
         hold_hdr = tk.Frame(inner, bg=c["bg"])
-        hold_hdr.pack(fill=tk.X, padx=28, pady=(24, 8))
-        self._make_label(hold_hdr, "보유 종목", 13, True).pack(side=tk.LEFT)
+        hold_hdr.pack(fill=tk.X, padx=28, pady=(0, 6))
         self.holdings_count_lbl = tk.Label(hold_hdr, text="0 종목",
-                                           font=(self.FONT, 10),
-                                           bg=c["bg"], fg=c["dim"])
-        self.holdings_count_lbl.pack(side=tk.RIGHT)
+                                           font=(self.MONO, 10, "bold"),
+                                           bg=c["bg"], fg=c["accent"])
+        self.holdings_count_lbl.pack(side=tk.LEFT)
 
         cols = ("종목명", "수량", "평균가", "현재가", "수익률", "목표가", "여력")
         tree_card = self._make_card(inner)
@@ -415,16 +432,18 @@ class OshmsApp:
 
         # ── 새로고침 버튼 ──
         btn_f = tk.Frame(inner, bg=c["bg"])
-        btn_f.pack(fill=tk.X, padx=28, pady=(14, 4))
-        self.refresh_btn = self._make_button(btn_f, "  새로고침  ",
+        btn_f.pack(fill=tk.X, padx=28, pady=(16, 4))
+        self.refresh_btn = self._make_button(btn_f, "  ↻ 새로고침  ",
                                               self._refresh_balance)
         self.refresh_btn.pack(side=tk.LEFT)
         self.auto_refresh_var = tk.BooleanVar(value=True)
         tk.Checkbutton(btn_f, text="자동 갱신 (30초)",
                        variable=self.auto_refresh_var,
-                       font=(self.FONT, 10), bg=c["bg"], fg=c["dim"],
+                       font=(self.FONT, 9), bg=c["bg"], fg=c["dim"],
                        selectcolor=c["accent_soft"], activebackground=c["bg"],
-                       activeforeground=c["fg"]).pack(side=tk.LEFT, padx=14)
+                       activeforeground=c["fg"],
+                       highlightthickness=0,
+                       borderwidth=0).pack(side=tk.LEFT, padx=14)
 
         # ── 개발 로드맵 ──
         self._section_header(inner, "개발 로드맵")
@@ -432,26 +451,30 @@ class OshmsApp:
         roadmap_card.pack(fill=tk.X, padx=28, pady=(0, 4))
         for ver, feature, done in self.ROADMAP:
             row_f = tk.Frame(roadmap_card, bg=c["card"])
-            row_f.pack(fill=tk.X, pady=3)
-            icon = "●" if done else "○"
+            row_f.pack(fill=tk.X, pady=4)
+            # 상태 아이콘 (완료: 체크, 미완: 점)
+            icon = "✓" if done else "○"
             icon_color = c["green"] if done else c["dim2"]
-            tk.Label(row_f, text=icon, font=("", 8), bg=c["card"],
-                     fg=icon_color).pack(side=tk.LEFT, padx=(0, 10))
-            tk.Label(row_f, text=ver, font=(self.MONO, 9, "bold"),
-                     bg=c["card"],
-                     fg=c["accent"] if not done else c["dim"]
-                     ).pack(side=tk.LEFT, padx=(0, 12))
+            tk.Label(row_f, text=icon, font=(self.FONT, 9, "bold"),
+                     bg=c["card"], fg=icon_color).pack(side=tk.LEFT, padx=(0, 10))
+            # 버전 뱃지 (배경색 차등)
+            ver_bg = c["accent_soft"] if not done else c["surface"]
+            ver_fg = c["accent"] if not done else c["dim"]
+            ver_lbl = tk.Label(row_f, text=f" {ver} ", font=(self.MONO, 9, "bold"),
+                               bg=ver_bg, fg=ver_fg, padx=4, pady=1)
+            ver_lbl.pack(side=tk.LEFT, padx=(0, 12))
             tk.Label(row_f, text=feature, font=(self.FONT, 10),
                      bg=c["card"],
                      fg=c["fg"] if done else c["dim"]
                      ).pack(side=tk.LEFT)
             if done:
-                tk.Label(row_f, text=" 완료 ", font=(self.FONT, 8, "bold"),
-                         bg=c["green_dim"], fg="#ffffff",
-                         padx=6, pady=1).pack(side=tk.RIGHT)
+                tk.Label(row_f, text=" DONE ", font=(self.MONO, 8, "bold"),
+                         bg=c["green_bg"], fg=c["green"],
+                         padx=8, pady=2).pack(side=tk.RIGHT)
             else:
-                tk.Label(row_f, text=" 예정 ", font=(self.FONT, 8),
-                         bg=c["card"], fg=c["orange"]).pack(side=tk.RIGHT)
+                tk.Label(row_f, text=" TODO ", font=(self.MONO, 8),
+                         bg=c["bg2"], fg=c["orange"],
+                         padx=8, pady=2).pack(side=tk.RIGHT)
 
         # ── 해외 시장 거래시간 ──
         self._section_header(inner, "해외 시장 거래시간 (한국시간 기준)")
@@ -459,17 +482,19 @@ class OshmsApp:
         hours_card.pack(fill=tk.X, padx=28, pady=(0, 28))
         for mk, (hours, has_ext) in self.MARKET_HOURS.items():
             row_f = tk.Frame(hours_card, bg=c["card"])
-            row_f.pack(fill=tk.X, pady=3)
-            tk.Label(row_f, text=f"{self.MARKETS.get(mk, mk):16s}",
-                     font=(self.MONO, 10, "bold"), bg=c["card"],
-                     fg=c["accent"]).pack(side=tk.LEFT)
+            row_f.pack(fill=tk.X, pady=4)
+            # 시장 이름 뱃지
+            mk_lbl = tk.Label(row_f, text=f" {self.MARKETS.get(mk, mk)} ",
+                              font=(self.MONO, 10, "bold"), bg=c["accent_soft"],
+                              fg=c["accent"], padx=4, pady=1)
+            mk_lbl.pack(side=tk.LEFT, padx=(0, 12))
             tk.Label(row_f, text=hours, font=(self.MONO, 10),
-                     bg=c["card"], fg=c["fg2"]).pack(side=tk.LEFT, padx=(10, 0))
+                     bg=c["card"], fg=c["fg2"]).pack(side=tk.LEFT)
             if has_ext:
-                tk.Label(row_f, text=" 시간외 가능 ",
-                         font=(self.FONT, 8, "bold"),
-                         bg=c["yellow"], fg="#1a1a1a",
-                         padx=6, pady=1).pack(side=tk.RIGHT)
+                tk.Label(row_f, text=" EXT ",
+                         font=(self.MONO, 8, "bold"),
+                         bg=c["bg2"], fg=c["yellow"],
+                         padx=6, pady=2).pack(side=tk.RIGHT)
 
         us_note = tk.Label(
             hours_card,
@@ -541,27 +566,40 @@ class OshmsApp:
                                     activebackground=c["card"],
                                     activeforeground=c["accent"])
 
+        # 구분선
+        tk.Frame(top, bg=c["border"], height=1).pack(fill=tk.X, pady=(8, 12))
+
         # 시작/중지 버튼
         btn_f = tk.Frame(top, bg=c["card"])
-        btn_f.pack(fill=tk.X, pady=(6, 0))
-        self.start_btn = self._make_button(btn_f, "  자동매매 시작  ",
+        btn_f.pack(fill=tk.X, pady=(0, 0))
+        self.start_btn = self._make_button(btn_f, "  ▶  자동매매 시작  ",
                                            self._start_trading, c["green_dim"])
-        self.start_btn.configure(font=(self.FONT, 12, "bold"), padx=28, pady=10)
-        self.start_btn.pack(side=tk.LEFT, padx=(0, 12))
-        self.stop_btn = self._make_button(btn_f, "  중지  ",
+        self.start_btn.configure(font=(self.FONT, 12, "bold"), padx=32, pady=12)
+        self.start_btn.pack(side=tk.LEFT, padx=(0, 14))
+        self.stop_btn = self._make_button(btn_f, "  ■  중지  ",
                                           self._stop_trading, c["red_dim"])
-        self.stop_btn.configure(state=tk.DISABLED)
+        self.stop_btn.configure(state=tk.DISABLED, font=(self.FONT, 11, "bold"),
+                                padx=20, pady=10)
         self.stop_btn.pack(side=tk.LEFT)
 
         # 로그 영역
         log_hdr = tk.Frame(frame, bg=c["bg"])
         log_hdr.pack(fill=tk.X, padx=24, pady=(14, 6))
-        self._make_label(log_hdr, "매매 로그", 13, True).pack(side=tk.LEFT)
-        tk.Button(log_hdr, text="로그 지우기", font=(self.FONT, 9),
-                  bg=c["bg"], fg=c["dim"], relief=tk.FLAT, cursor="hand2",
+        # 액센트 바 + 라벨
+        bar = tk.Frame(log_hdr, bg=c["accent"], width=4, height=18)
+        bar.pack(side=tk.LEFT, padx=(0, 10))
+        bar.pack_propagate(False)
+        self._make_label(log_hdr, "매매 로그", 12, True).pack(side=tk.LEFT)
+        # 지우기 버튼 (호버 효과)
+        clear_btn = tk.Button(log_hdr, text="  지우기  ", font=(self.FONT, 9),
+                  bg=c["surface"], fg=c["dim"], relief=tk.FLAT, cursor="hand2",
                   command=lambda: self.log_text.delete("1.0", tk.END),
-                  activebackground=c["bg"],
-                  activeforeground=c["accent"]).pack(side=tk.RIGHT)
+                  activebackground=c["card"],
+                  activeforeground=c["accent"],
+                  borderwidth=0, highlightthickness=0)
+        clear_btn.pack(side=tk.RIGHT)
+        clear_btn.bind("<Enter>", lambda e: clear_btn.config(fg=c["accent"]))
+        clear_btn.bind("<Leave>", lambda e: clear_btn.config(fg=c["dim"]))
 
         log_card = self._make_card(frame)
         log_card.pack(fill=tk.BOTH, expand=True, padx=24, pady=(0, 18))
@@ -748,33 +786,40 @@ class OshmsApp:
         self.notebook.add(frame, text="   AI 어시스턴트   ")
         c = self.c
 
-        # 상단 안내
-        info_f = tk.Frame(frame, bg=c["bg2"])
+        # 상단 안내 배너
+        info_f = tk.Frame(frame, bg=c["bg2"], height=42)
         info_f.pack(fill=tk.X, padx=0, pady=0)
+        info_f.pack_propagate(False)
+        # AI 아이콘 뱃지
+        ai_badge = tk.Frame(info_f, bg=c["accent2"], padx=6, pady=1)
+        ai_badge.pack(side=tk.LEFT, padx=(24, 10), pady=10)
+        tk.Label(ai_badge, text="AI", font=(self.FONT, 9, "bold"),
+                 bg=c["accent2"], fg="#ffffff").pack()
         tk.Label(info_f,
-                 text="  AI에게 매매 전략, 종목 분석, 시장 상황 등을 질문하세요",
-                 font=(self.FONT, 10), bg=c["bg2"], fg=c["dim"],
-                 pady=8).pack(side=tk.LEFT, padx=16)
+                 text="매매 전략, 종목 분석, 시장 상황 등을 질문하세요",
+                 font=(self.FONT, 10), bg=c["bg2"], fg=c["dim"]
+                 ).pack(side=tk.LEFT)
 
-        # 빠른 질문 버튼
+        # 빠른 질문 칩 버튼
         quick_f = tk.Frame(frame, bg=c["bg"])
-        quick_f.pack(fill=tk.X, padx=24, pady=(12, 8))
+        quick_f.pack(fill=tk.X, padx=24, pady=(14, 8))
+        tk.Label(quick_f, text="빠른질문", font=(self.FONT, 9),
+                 bg=c["bg"], fg=c["dim2"]).pack(side=tk.LEFT, padx=(0, 10))
         quick_questions = [
-            ("현재 포트폴리오 분석", "내 현재 포트폴리오 상태를 분석하고 조언해줘"),
-            ("오늘 시장 전망", "오늘 한국 주식 시장 전망은 어때? 어떤 전략이 좋을까?"),
-            ("매매 전략 추천", "지금 시점에서 가장 효과적인 매매 전략을 추천해줘"),
+            ("포트폴리오 분석", "내 현재 포트폴리오 상태를 분석하고 조언해줘"),
+            ("시장 전망", "오늘 한국 주식 시장 전망은 어때? 어떤 전략이 좋을까?"),
+            ("전략 추천", "지금 시점에서 가장 효과적인 매매 전략을 추천해줘"),
             ("리스크 점검", "현재 설정된 리스크 관리 파라미터가 적절한지 점검해줘"),
         ]
         for label, question in quick_questions:
-            btn = tk.Button(quick_f, text=label,
+            btn = tk.Label(quick_f, text=label,
                            font=(self.FONT, 9),
                            bg=c["accent_soft"], fg=c["accent"],
-                           relief=tk.FLAT, padx=12, pady=4,
-                           cursor="hand2",
-                           activebackground=c["card"],
-                           activeforeground=c["fg"],
-                           command=lambda q=question: self._send_quick_chat(q))
-            btn.pack(side=tk.LEFT, padx=(0, 8))
+                           padx=14, pady=4, cursor="hand2")
+            btn.pack(side=tk.LEFT, padx=(0, 6))
+            btn.bind("<Button-1>", lambda e, q=question: self._send_quick_chat(q))
+            btn.bind("<Enter>", lambda e, w=btn: w.config(bg=c["accent"], fg="#ffffff"))
+            btn.bind("<Leave>", lambda e, w=btn: w.config(bg=c["accent_soft"], fg=c["accent"]))
 
         # 채팅 디스플레이
         chat_card = self._make_card(frame)
@@ -837,18 +882,24 @@ class OshmsApp:
                                    relief=tk.FLAT,
                                    insertbackground=c["accent"])
         self.chat_input.pack(side=tk.LEFT, fill=tk.X, expand=True,
-                            padx=(14, 8), pady=10)
+                            padx=(16, 8), pady=12)
         self.chat_input.bind("<Return>", lambda e: self._send_chat())
+        # 포커스 효과
+        input_card.bind("<Enter>", lambda e: input_card.config(
+            highlightbackground=c["accent"]))
+        input_card.bind("<Leave>", lambda e: input_card.config(
+            highlightbackground=c["input_border"]))
 
-        self.chat_send_btn = tk.Button(input_card, text="전송",
+        self.chat_send_btn = tk.Button(input_card, text="  전송  ",
                                         font=(self.FONT, 10, "bold"),
                                         bg=c["accent"], fg="#ffffff",
-                                        relief=tk.FLAT, padx=20, pady=6,
+                                        relief=tk.FLAT, padx=22, pady=8,
                                         cursor="hand2",
-                                        activebackground=c["accent2"],
+                                        activebackground=c["accent_hover"],
                                         activeforeground="#ffffff",
+                                        borderwidth=0, highlightthickness=0,
                                         command=self._send_chat)
-        self.chat_send_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=6)
+        self.chat_send_btn.pack(side=tk.RIGHT, padx=(0, 8), pady=8)
 
     def _add_chat_system(self, text):
         """시스템 메시지를 채팅에 표시."""
@@ -1139,24 +1190,32 @@ class OshmsApp:
         self._add_checkbox(inner, "자동 진화 활성화", "auto_evolve")
         self._add_field(inner, "학습 주기 (거래 건수)", "learn_interval")
 
+        # 구분선
+        tk.Frame(inner, bg=c["border"], height=1).pack(fill=tk.X, padx=28, pady=(20, 0))
+
         # 저장/검증 버튼
         btn_f = tk.Frame(inner, bg=c["bg"])
-        btn_f.pack(fill=tk.X, padx=32, pady=(28, 36))
-        self.save_btn = self._make_button(btn_f, "  설정 저장  ",
-                                          self._save_settings)
-        self.save_btn.configure(font=(self.FONT, 12, "bold"), padx=28, pady=10)
-        self.save_btn.pack(side=tk.LEFT, padx=(0, 12))
-        self.validate_btn = self._make_button(btn_f, "  설정 검증  ",
+        btn_f.pack(fill=tk.X, padx=32, pady=(24, 36))
+        self.save_btn = self._make_button(btn_f, "  저장  ",
+                                          self._save_settings, c["green_dim"])
+        self.save_btn.configure(font=(self.FONT, 12, "bold"), padx=32, pady=12)
+        self.save_btn.pack(side=tk.LEFT, padx=(0, 14))
+        self.validate_btn = self._make_button(btn_f, "  검증  ",
                                               self._validate_settings,
                                               c["surface"])
-        self.validate_btn.configure(fg=c["fg"])
+        self.validate_btn.configure(fg=c["fg"], font=(self.FONT, 11, "bold"),
+                                    padx=24, pady=10)
         self.validate_btn.pack(side=tk.LEFT)
 
     def _add_settings_section(self, parent, title):
         c = self.c
         f = tk.Frame(parent, bg=c["bg"])
-        f.pack(fill=tk.X, padx=28, pady=(24, 6))
-        tk.Label(f, text=title, font=(self.FONT, 13, "bold"),
+        f.pack(fill=tk.X, padx=28, pady=(24, 8))
+        # 왼쪽 액센트 바
+        bar = tk.Frame(f, bg=c["accent"], width=3, height=18)
+        bar.pack(side=tk.LEFT, padx=(0, 10))
+        bar.pack_propagate(False)
+        tk.Label(f, text=title, font=(self.FONT, 12, "bold"),
                  bg=c["bg"], fg=c["fg"]).pack(side=tk.LEFT)
         sep = tk.Frame(f, bg=c["border"], height=1)
         sep.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(16, 0), pady=1)
@@ -1192,49 +1251,75 @@ class OshmsApp:
         style = ttk.Style()
         style.theme_use("clam")
 
-        # 노트북 탭 - 프리미엄 스타일
-        style.configure("TNotebook", background=c["bg"], borderwidth=0)
+        # ─── 노트북 탭 (넉넉한 패딩, 선명한 선택 표시) ───
+        style.configure("TNotebook", background=c["bg"], borderwidth=0,
+                        tabmargins=[0, 0, 0, 0])
         style.configure("TNotebook.Tab",
                         background=c["bg2"], foreground=c["dim"],
-                        padding=[24, 12],
+                        padding=[28, 12],
                         font=(self.FONT, 10, "bold"))
         style.map("TNotebook.Tab",
                   background=[("selected", c["surface"]), ("active", c["card"])],
-                  foreground=[("selected", c["accent"]), ("active", c["fg"])])
+                  foreground=[("selected", c["accent"]), ("active", c["fg"])],
+                  padding=[("selected", [28, 13])])
+        style.layout("TNotebook.Tab", [
+            ("Notebook.tab", {"sticky": "nswe", "children": [
+                ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
+                    ("Notebook.label", {"side": "top", "sticky": ""})
+                ]})
+            ]})
+        ])
 
-        # 트리뷰 - 깔끔한 테이블
+        # ─── 트리뷰 (Bloomberg 스타일 테이블) ───
         style.configure("Treeview",
                         background=c["bg2"], foreground=c["fg"],
                         fieldbackground=c["bg2"], borderwidth=0,
-                        font=(self.FONT, 10), rowheight=34)
+                        font=(self.FONT, 10), rowheight=36)
         style.configure("Treeview.Heading",
-                        background=c["card"], foreground=c["fg2"],
+                        background=c["surface"], foreground=c["fg2"],
                         font=(self.FONT, 9, "bold"), borderwidth=0,
-                        relief=tk.FLAT, padding=6)
+                        relief=tk.FLAT, padding=[8, 6])
         style.map("Treeview",
                   background=[("selected", c["accent_soft"])],
-                  foreground=[("selected", "#ffffff")])
+                  foreground=[("selected", c["accent"])])
         style.map("Treeview.Heading",
-                  background=[("active", c["card_hover"])])
+                  background=[("active", c["card"])])
 
-        # 콤보박스
+        # ─── 콤보박스 (깔끔한 드롭다운) ───
         style.configure("TCombobox",
                         fieldbackground=c["input_bg"],
-                        background=c["card"], foreground=c["fg"],
-                        padding=6)
+                        background=c["surface"], foreground=c["fg"],
+                        arrowcolor=c["accent"],
+                        borderwidth=1,
+                        padding=7)
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", c["input_bg"])],
+                  foreground=[("readonly", c["fg"])],
+                  selectbackground=[("readonly", c["accent_soft"])])
 
-        # 스크롤바 - 슬림 스타일
+        # 콤보박스 드롭다운 리스트 색상 (Tk 옵션)
+        self.root.option_add("*TCombobox*Listbox.background", c["surface"])
+        self.root.option_add("*TCombobox*Listbox.foreground", c["fg"])
+        self.root.option_add("*TCombobox*Listbox.selectBackground", c["accent_soft"])
+        self.root.option_add("*TCombobox*Listbox.selectForeground", c["accent"])
+        self.root.option_add("*TCombobox*Listbox.font", (self.FONT, 10))
+
+        # ─── 스크롤바 (슬림 6px) ───
         style.configure("Vertical.TScrollbar",
                         background=c["surface"],
                         troughcolor=c["bg"], borderwidth=0,
-                        arrowcolor=c["dim"], width=8)
+                        arrowcolor=c["dim2"], width=6)
         style.map("Vertical.TScrollbar",
-                  background=[("active", c["accent_soft"])])
+                  background=[("active", c["accent_soft"]),
+                              ("pressed", c["accent"])])
 
-        # 체크버튼
+        # ─── 체크버튼 ───
         style.configure("TCheckbutton",
                         background=c["bg"],
                         foreground=c["fg"])
+
+        # ─── 프레임 ───
+        style.configure("TFrame", background=c["bg"])
 
     # ═══════════════════════════════════════════════
     # 진화 상세
