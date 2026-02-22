@@ -30,6 +30,8 @@ class Position:
     highest_price: int = 0  # 매수 후 최고가 (트레일링 스탑용)
     signal_strength: float = 0.0  # 매수 시 신호 강도
     atr_at_buy: float = 0.0  # 매수 시 ATR (동적 리스크 관리용)
+    target_price: int = 0  # 전략 분석 기반 목표가
+    estimated_upside: float = 0.0  # 예상 상승여력 (%)
 
     @property
     def profit_rate(self) -> float:
@@ -145,6 +147,7 @@ class OrderManager:
     def execute_buy(
         self, stock_code: str, stock_name: str, price: int, reason: str,
         strength: float = 0.5, atr: float = 0.0,
+        target_price: int = 0, estimated_upside: float = 0.0,
     ) -> bool:
         """매수를 실행한다."""
         if not self.can_buy():
@@ -176,6 +179,8 @@ class OrderManager:
             highest_price=price,
             signal_strength=strength,
             atr_at_buy=atr,
+            target_price=target_price,
+            estimated_upside=estimated_upside,
         )
 
         # 거래 기록
@@ -264,19 +269,19 @@ class OrderManager:
     def check_take_profit(self) -> list[str]:
         """익절 조건을 확인하여 매도 대상 종목을 반환한다.
 
-        ATR 기반 동적 익절: ATR이 있으면 ATR의 3배를 익절선으로 사용.
-        없으면 설정의 고정 익절률 사용.
-        트레일링 스탑이 수익 보호를 담당하므로, 익절은 큰 수익 확정용으로만 사용.
+        v2.7: 익절 기준 대폭 상향 — 목표가 기반 매도가 주 매도 메커니즘이므로
+        여기서는 극단적 과열 상황(20%+)에서만 강제 익절한다.
+        ATR 기반 동적 익절은 최소 15%에서 적용.
         """
         targets = []
         for code, pos in self.positions.items():
-            # ATR 기반 동적 익절
+            # ATR 기반 동적 익절 (상향 조정)
             if pos.atr_at_buy > 0 and pos.avg_price > 0:
-                dynamic_take_pct = pos.atr_at_buy * 3 / pos.avg_price * 100
-                # 최소 설정값, 최대 8%
-                take_pct = max(self.settings.take_profit_pct, min(8.0, dynamic_take_pct))
+                dynamic_take_pct = pos.atr_at_buy * 8 / pos.avg_price * 100
+                # 최소 15%, 최대 30%
+                take_pct = max(15.0, min(30.0, dynamic_take_pct))
             else:
-                take_pct = self.settings.take_profit_pct
+                take_pct = 20.0  # 기본 20% (기존 5% → 상향)
 
             if pos.profit_rate >= take_pct:
                 targets.append(code)
@@ -286,13 +291,14 @@ class OrderManager:
                 )
         return targets
 
-    def check_trailing_stop(self, trail_pct: float = 1.5) -> list[str]:
+    def check_trailing_stop(self, trail_pct: float = 3.0) -> list[str]:
         """트레일링 스탑 조건을 확인한다.
 
-        수익률 구간별 차등 적용:
-        - 수익 1~3%: 최고가 대비 1.5% 하락 시 매도 (수익 보호)
-        - 수익 3~5%: 최고가 대비 2.0% 하락 시 매도 (약간 여유)
-        - 수익 5%+:  최고가 대비 2.5% 하락 시 매도 (큰 수익 보호하되 여유)
+        수익률 구간별 차등 적용 (v2.7: 더 여유롭게 — 큰 수익 추구):
+        - 수익 1~5%:   최고가 대비 3% 하락 시 매도
+        - 수익 5~10%:  최고가 대비 5% 하락 시 매도
+        - 수익 10~20%: 최고가 대비 7% 하락 시 매도
+        - 수익 20%+:   최고가 대비 10% 하락 시 매도 (대형 수익 극대화)
         """
         targets = []
         for code, pos in self.positions.items():
@@ -301,13 +307,15 @@ class OrderManager:
             if pos.profit_rate <= 0:
                 continue  # 수익 중인 종목만
 
-            # 수익률 구간별 트레일링 퍼센트 조정
-            if pos.profit_rate >= 5.0:
-                effective_trail = 2.5
-            elif pos.profit_rate >= 3.0:
-                effective_trail = 2.0
+            # 수익률 구간별 트레일링 퍼센트 조정 (여유롭게)
+            if pos.profit_rate >= 20.0:
+                effective_trail = 10.0
+            elif pos.profit_rate >= 10.0:
+                effective_trail = 7.0
+            elif pos.profit_rate >= 5.0:
+                effective_trail = 5.0
             else:
-                effective_trail = trail_pct  # 기본 1.5%
+                effective_trail = trail_pct  # 기본 3.0%
 
             drop_from_high = ((pos.highest_price - pos.current_price) / pos.highest_price) * 100
             if drop_from_high >= effective_trail:

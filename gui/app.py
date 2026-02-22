@@ -87,7 +87,7 @@ class OshmsApp:
         "TKSE": ("09:00~15:00 (KST)", False),
     }
 
-    VERSION = "2.6.0"
+    VERSION = "2.7.0"
 
     ROADMAP = [
         ("v2.4", "AI 분석 (OpenAI/Claude)", True),

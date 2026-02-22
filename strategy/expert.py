@@ -649,27 +649,158 @@ class ExpertStrategy(BaseStrategy):
         return reasons
 
     def _calc_target_price(self, analysis: ExpertAnalysis) -> int:
-        """목표가를 계산한다."""
+        """목표가를 계산한다.
+
+        여러 기술적 목표치를 종합하여 가장 현실적인 상방 목표가를 산출한다.
+        - 볼린저 밴드 상단 (강한 매수 시)
+        - 저항선 (다음 저항 가격대)
+        - ATR 기반 목표 (ATR × 배수)
+        - 추세 강도에 따른 동적 배수
+        """
         if not analysis.technical or analysis.price <= 0:
             return 0
 
         t = analysis.technical
+        price = analysis.price
 
         if analysis.decision in ("STRONG_BUY", "BUY"):
-            # 매수 시 목표가: 볼린저 중간선 또는 저항선
             targets = []
-            if t.bb_middle > analysis.price:
-                targets.append(int(t.bb_middle))
+
+            # 1. 볼린저 밴드 상단 (강한 추세면 상단까지)
+            if t.bb_upper and t.bb_upper > price:
+                targets.append(int(t.bb_upper))
+
+            # 2. 저항선들 (현재가 위의 모든 저항선)
             if t.resistance_levels:
-                targets.append(int(t.resistance_levels[0]))
-            if t.vwap > analysis.price:
-                targets.append(int(t.vwap))
-            return min(targets) if targets else int(analysis.price * 1.03)
+                for r in t.resistance_levels:
+                    if r > price:
+                        targets.append(int(r))
+
+            # 3. ATR 기반 목표: 추세 강도에 따라 배수 조정
+            if t.atr > 0:
+                # 강한 상승추세: ATR × 5~8배, 약한 추세: ATR × 3배
+                if t.trend_score > 0.5:
+                    atr_mult = 8.0
+                elif t.trend_score > 0.2:
+                    atr_mult = 5.0
+                else:
+                    atr_mult = 3.0
+                targets.append(int(price + t.atr * atr_mult))
+
+            # 4. 신뢰도/강도 기반 최소 목표
+            if analysis.decision == "STRONG_BUY":
+                targets.append(int(price * 1.08))  # 최소 8%
+            else:
+                targets.append(int(price * 1.05))  # 최소 5%
+
+            # 최종: 중간값 선택 (최소/최대 제외)
+            if len(targets) >= 3:
+                targets.sort()
+                return targets[len(targets) // 2]
+            return max(targets) if targets else int(price * 1.05)
 
         elif analysis.decision in ("STRONG_SELL", "SELL"):
-            return int(analysis.price * 0.98)
+            return int(price * 0.97)
 
         return 0
+
+    def estimate_upside(self, stock_code: str, candles: list[dict],
+                        current_price: dict) -> dict:
+        """보유 종목의 추가 상승여력을 분석한다.
+
+        매도 시점 판단에 사용된다. 현재가 기준으로 목표가까지의
+        잔여 상승여력과 추세 지속 확률을 계산한다.
+
+        Returns:
+            dict with keys:
+            - target_price: 분석 기반 목표가
+            - upside_pct: 현재가 대비 상승여력 (%)
+            - trend_alive: 추세가 살아있는지 (bool)
+            - momentum_score: 모멘텀 점수 (-1~1)
+            - should_hold: 계속 보유 추천 (bool)
+            - reason: 판단 근거
+        """
+        price = current_price.get("price", 0)
+        stock_name = current_price.get("stock_name", stock_code)
+        if price <= 0:
+            return {"target_price": 0, "upside_pct": 0, "trend_alive": False,
+                    "momentum_score": 0, "should_hold": False, "reason": "가격 데이터 없음"}
+
+        analysis = self.full_analysis(stock_code, stock_name, candles, current_price)
+        t = analysis.technical
+
+        if not t:
+            return {"target_price": 0, "upside_pct": 0, "trend_alive": False,
+                    "momentum_score": 0, "should_hold": False, "reason": "기술적 데이터 부족"}
+
+        target = self._calc_target_price(analysis)
+        upside_pct = ((target - price) / price * 100) if target > 0 else 0
+
+        # ── 추세 생존 판단 ──
+        trend_alive = True
+        reasons = []
+
+        # 1. 이동평균 정배열 확인
+        ma_aligned = (t.sma_5 > t.sma_20 > t.sma_60) if (t.sma_5 > 0 and t.sma_20 > 0 and t.sma_60 > 0) else False
+        if ma_aligned:
+            reasons.append("이평선 정배열 유지")
+
+        # 2. MACD 상태
+        if t.macd_cross == "dead":
+            trend_alive = False
+            reasons.append("MACD 데드크로스 발생")
+        elif t.macd_histogram > 0:
+            reasons.append("MACD 히스토그램 양(+)")
+
+        # 3. RSI 과열 확인
+        if t.rsi > 80:
+            trend_alive = False
+            reasons.append(f"RSI 극과매수({t.rsi:.0f})")
+        elif t.rsi > 70:
+            reasons.append(f"RSI 과매수 경고({t.rsi:.0f})")
+
+        # 4. 볼린저 밴드 위치
+        if t.bb_position > 0.95:
+            reasons.append("볼린저 상단 돌파 — 과열 주의")
+        elif t.bb_position > 0.7:
+            reasons.append("볼린저 상단 접근 중")
+
+        # 5. 거래량 확인
+        if t.volume_ratio < 0.5:
+            trend_alive = False
+            reasons.append("거래량 급감 — 추세 약화")
+        elif t.volume_ratio > 1.5:
+            reasons.append(f"거래량 증가(x{t.volume_ratio:.1f})")
+
+        # 6. 스토캐스틱
+        if t.stoch_cross == "dead" and t.stoch_k > 80:
+            trend_alive = False
+            reasons.append("스토캐스틱 데드크로스(고점)")
+
+        # ── 모멘텀 종합 점수 ──
+        momentum = analysis.technical_score * 0.5 + analysis.price_level_score * 0.3
+        if ma_aligned:
+            momentum += 0.2
+        if t.volume_ratio > 1.2:
+            momentum += 0.1
+        momentum = max(-1.0, min(1.0, momentum))
+
+        # ── 보유 판단 ──
+        should_hold = trend_alive and upside_pct > 1.0 and momentum > -0.3
+
+        # 추세가 죽었어도 목표가까지 여유가 많으면 (10%+) 좀 더 지켜봄
+        if not trend_alive and upside_pct > 10.0 and momentum > 0:
+            should_hold = True
+            reasons.append("추세 약화이나 상승여력 충분 — 관찰 유지")
+
+        return {
+            "target_price": target,
+            "upside_pct": round(upside_pct, 2),
+            "trend_alive": trend_alive,
+            "momentum_score": round(momentum, 3),
+            "should_hold": should_hold,
+            "reason": " | ".join(reasons) if reasons else "분석 데이터 부족",
+        }
 
     def _ensure_ascending(self, candles: list[dict]) -> list[dict]:
         """캔들을 과거순(oldest first)으로 정렬한다."""

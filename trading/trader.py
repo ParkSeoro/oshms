@@ -3,7 +3,7 @@
 전략 분석 → 리스크 관리 → 주문 실행의 전체 사이클을 관리한다.
 Expert 모드에서는 시장 컨텍스트와 멀티 타임프레임 분석을 추가한다.
 
-v2.6: 진화엔진 연동, 전체 시장 스캔, 수익 매도 최적화
+v2.7: 분석 기반 목표가 매도 — 상승여력 소진까지 홀딩
 """
 
 import json
@@ -345,41 +345,68 @@ class AutoTrader:
             self._log_status()
 
     def _check_risk_management(self) -> None:
-        """리스크 관리: 트레일링 스탑, 익절, 손절, 장마감 청산."""
+        """리스크 관리: 상승여력 재분석, 트레일링 스탑, 손절, 장마감.
 
-        # 1. 트레일링 스탑 (수익 보호 최우선)
+        v2.7: 보유 종목의 상승여력을 주기적으로 재분석하여
+        목표가를 동적으로 갱신하고, 추세가 소진될 때까지 홀딩한다.
+        """
+
+        # ── 0. 보유 종목 상승여력 재분석 (3사이클마다) ──
+        if isinstance(self.strategy, ExpertStrategy) and self._cycle_count % 3 == 0:
+            self._reassess_positions()
+
+        # ── 1. 트레일링 스탑 (수익 보호 — 여유롭게) ──
         for code in self.order_manager.check_trailing_stop():
             try:
                 pos = self.order_manager.positions.get(code)
-                if pos and pos.profit_rate > 0:
-                    self.order_manager.execute_sell(code, "트레일링스탑")
+                if not pos or pos.profit_rate <= 0:
+                    continue
+
+                # 목표가가 있고, 아직 많이 남았으면 트레일링 무시
+                if pos.target_price > 0 and pos.current_price > 0:
+                    remaining_upside = (pos.target_price - pos.current_price) / pos.current_price * 100
+                    if remaining_upside > 5.0:
+                        logger.info(
+                            "[%s] 트레일링 유보: 목표가까지 %.1f%% 남음 (목표=%s원)",
+                            code, remaining_upside, f"{pos.target_price:,}",
+                        )
+                        continue
+
+                pr = pos.profit_rate
+                self.order_manager.execute_sell(code, "트레일링스탑")
+                self._on_trade_completed(code, pr, "SELL")
             except Exception as e:
                 logger.error("[%s] 트레일링스탑 매도 실패: %s", code, e)
 
-        # 2. 익절 (목표 수익 달성)
-        for code in self.order_manager.check_take_profit():
-            try:
-                pos = self.order_manager.positions.get(code)
-                pr = pos.profit_rate if pos else 0
-                self.order_manager.execute_sell(code, "익절")
-                self._on_trade_completed(code, pr, "SELL")
-            except Exception as e:
-                logger.error("[%s] 익절 매도 실패: %s", code, e)
+        # ── 2. 목표가 도달 확인 (분석 기반 익절) ──
+        for code, pos in list(self.order_manager.positions.items()):
+            if pos.target_price > 0 and pos.current_price >= pos.target_price:
+                try:
+                    pr = pos.profit_rate
+                    logger.info(
+                        "🎯 목표가 도달: %s(%s) 현재=%s 목표=%s 수익률=%.1f%%",
+                        pos.stock_name, code,
+                        f"{pos.current_price:,}", f"{pos.target_price:,}",
+                        pr,
+                    )
+                    self.order_manager.execute_sell(code, f"목표가도달({pos.target_price:,}원)")
+                    self._on_trade_completed(code, pr, "SELL")
+                except Exception as e:
+                    logger.error("[%s] 목표가 매도 실패: %s", code, e)
 
-        # 3. 손절 (마지막 수단 - 극단적 하락만)
+        # ── 3. 손절 (극단적 하락만 — -3% 하드스탑) ──
         for code in self.order_manager.check_stop_loss():
             try:
                 pos = self.order_manager.positions.get(code)
                 if not pos:
                     continue
 
-                # 손절 기준을 더 보수적으로: -3% 이하만 실제 손절
                 if pos.profit_rate <= -3.0:
                     pr = pos.profit_rate
                     self.order_manager.execute_sell(code, "손절")
                     self._cooldown_stocks[code] = time.time() + self._COOLDOWN_SECONDS
                     logger.info("[%s] 쿨다운 등록: %d초간 재매수 금지", code, self._COOLDOWN_SECONDS)
-                    self._on_trade_completed(code, pr, "BUY")  # 매수 후 손실 → 매수 기준 학습
+                    self._on_trade_completed(code, pr, "BUY")
                 else:
                     logger.info(
                         "[%s] 손절 대기: %.2f%% (기준: -3.0%% 미만 시 매도)",
@@ -388,32 +415,99 @@ class AutoTrader:
             except Exception as e:
                 logger.error("[%s] 손절 매도 실패: %s", code, e)
 
-        # 4. 장 마감 전 수익 종목 청산 (15:15 이후)
+        # ── 4. 장마감 처리 (15:20 이후 — 수익 큰 종목만 청산, 나머지 보유) ──
         now_str = datetime.now().strftime("%H:%M")
-        if now_str >= "15:15":
+        if now_str >= "15:20":
             remaining = list(self.order_manager.positions.keys())
             for code in remaining:
                 try:
                     pos = self.order_manager.positions[code]
-                    if pos.profit_rate > 0:
+                    # 큰 수익 (5%+): 확정 → 수익을 먹고 퇴장
+                    if pos.profit_rate >= 5.0:
                         logger.info(
-                            "장마감 수익 청산: %s(%s) 수익률=%.2f%%",
+                            "장마감 익절: %s(%s) 수익률=%.2f%% → 수익 확정",
                             pos.stock_name, code, pos.profit_rate,
                         )
-                        self.order_manager.execute_sell(code, "장마감청산(수익)")
-                    elif pos.profit_rate <= -2.0:
+                        self.order_manager.execute_sell(code, "장마감익절(수익확정)")
+                        self._on_trade_completed(code, pos.profit_rate, "SELL")
+                    # 큰 손실 (-3%+): 청산
+                    elif pos.profit_rate <= -3.0:
                         logger.info(
-                            "장마감 손실 청산: %s(%s) 수익률=%.2f%%",
+                            "장마감 손절: %s(%s) 수익률=%.2f%%",
                             pos.stock_name, code, pos.profit_rate,
                         )
                         self.order_manager.execute_sell(code, "장마감청산(손절)")
+                        self._on_trade_completed(code, pos.profit_rate, "BUY")
                     else:
+                        # 소폭 수익/손실: 오버나이트 보유 (내일 목표가 도달 대기)
                         logger.info(
-                            "장마감 보류: %s(%s) 수익률=%.2f%% (내일 회복 대기)",
+                            "장마감 보유유지: %s(%s) 수익률=%.2f%% 목표가=%s (오버나이트)",
                             pos.stock_name, code, pos.profit_rate,
+                            f"{pos.target_price:,}" if pos.target_price else "미정",
                         )
                 except Exception as e:
-                    logger.error("[%s] 장마감 청산 실패: %s", code, e)
+                    logger.error("[%s] 장마감 처리 실패: %s", code, e)
+
+    def _reassess_positions(self) -> None:
+        """보유 종목의 상승여력을 재분석하여 목표가를 갱신한다.
+
+        추세가 살아있으면 목표가를 상향 조정하고,
+        추세가 소진되면 즉시 매도한다.
+        """
+        if not isinstance(self.strategy, ExpertStrategy):
+            return
+
+        for code, pos in list(self.order_manager.positions.items()):
+            if pos.profit_rate <= 0:
+                continue  # 수익 종목만 재분석
+
+            try:
+                current_price = self.api.get_current_price(code)
+                if not current_price:
+                    continue
+
+                candles = self.api.get_minute_chart(code, period="3")
+                if len(candles) < 20:
+                    candles = self.api.get_daily_chart(code, count=60)
+                if not candles:
+                    continue
+
+                upside = self.strategy.estimate_upside(code, candles, current_price)
+
+                # 목표가 갱신 (상향만 — 하향은 안 함)
+                if upside["target_price"] > pos.target_price:
+                    old = pos.target_price
+                    pos.target_price = upside["target_price"]
+                    pos.estimated_upside = upside["upside_pct"]
+                    logger.info(
+                        "📈 [%s] 목표가 상향: %s→%s원 (여력=%.1f%%)",
+                        pos.stock_name,
+                        f"{old:,}" if old else "미정",
+                        f"{pos.target_price:,}",
+                        upside["upside_pct"],
+                    )
+
+                # 추세 소진 + 수익 확보 → 매도
+                if not upside["should_hold"] and pos.profit_rate > 2.0:
+                    logger.info(
+                        "📉 [%s] 추세 소진 → 수익 확정: %.1f%% | %s",
+                        pos.stock_name, pos.profit_rate, upside["reason"],
+                    )
+                    pr = pos.profit_rate
+                    self.order_manager.execute_sell(
+                        code, f"추세소진(수익={pr:.1f}%) | {upside['reason']}"
+                    )
+                    self._on_trade_completed(code, pr, "SELL")
+                elif self._cycle_count % 10 == 0:
+                    logger.info(
+                        "  [%s] 보유유지: 수익=%.1f%% 여력=%.1f%% 모멘텀=%.2f 목표=%s원",
+                        pos.stock_name, pos.profit_rate,
+                        upside["upside_pct"], upside["momentum_score"],
+                        f"{pos.target_price:,}" if pos.target_price else "미정",
+                    )
+
+            except Exception as e:
+                logger.error("[%s] 상승여력 재분석 실패: %s", code, e)
 
     def _on_trade_completed(self, stock_code: str = "", profit_rate: float = 0,
                                decision: str = ""):
@@ -505,35 +599,99 @@ class AutoTrader:
             # 매수 강도 기준 (Expert는 0.25 이상, 일반 0.30 이상)
             min_strength = 0.25 if isinstance(self.strategy, ExpertStrategy) else 0.3
             if signal.strength >= min_strength:
+                # 목표가 및 상승여력 계산
+                target_price = getattr(signal, "target_price", 0) or 0
+                estimated_upside = 0.0
+                if target_price > 0 and current_price["price"] > 0:
+                    estimated_upside = (target_price - current_price["price"]) / current_price["price"] * 100
+
+                logger.info(
+                    "  목표가=%s원 (상승여력=%.1f%%)",
+                    f"{target_price:,}" if target_price else "미정",
+                    estimated_upside,
+                )
+
                 self.order_manager.execute_buy(
                     stock_code, stock_name, current_price["price"], signal.reason,
                     strength=signal.strength, atr=atr_value,
+                    target_price=target_price, estimated_upside=estimated_upside,
                 )
             else:
                 logger.debug(
                     "  → 매수 신호 강도 부족: %.2f < %.2f (패스)", signal.strength, min_strength,
                 )
 
-        # ── 매도 로직 (수익 시에만 전략 매도) ──
+        # ── 매도 로직 (분석 기반 목표가 도달 판단) ──
         elif signal.signal_type == SignalType.SELL:
             if stock_code in self.order_manager.positions:
                 pos = self.order_manager.positions[stock_code]
                 logger.info(
-                    "▶ 매도 신호: %s(%s) 가격=%s 수익률=%.2f%% 강도=%.2f | %s",
+                    "▶ 매도 신호: %s(%s) 가격=%s 수익률=%.2f%% 목표가=%s 강도=%.2f | %s",
                     pos.stock_name, stock_code,
                     f"{current_price['price']:,}",
-                    pos.profit_rate, signal.strength, signal.reason,
+                    pos.profit_rate,
+                    f"{pos.target_price:,}" if pos.target_price else "미정",
+                    signal.strength, signal.reason,
                 )
 
-                # 수익인 경우만 전략 매도 (손실 시 회복 대기)
-                if pos.profit_rate > 0.3 and signal.strength >= 0.15:
-                    pr = pos.profit_rate
-                    self.order_manager.execute_sell(stock_code, signal.reason)
-                    self._on_trade_completed(stock_code, pr, "SELL")
-                elif pos.profit_rate > 0:
-                    logger.info("  → 소폭 수익(%.2f%%) - 추가 상승 대기", pos.profit_rate)
+                # 손실 중이면 회복 대기 (손절은 _check_risk_management에서 처리)
+                if pos.profit_rate <= 0:
+                    logger.info("  → 손실 중(%.2f%%) — 회복 대기 (손절만 작동)", pos.profit_rate)
+                    return
+
+                # ── 상승여력 재분석 ──
+                should_sell = False
+                sell_reason = signal.reason
+
+                if isinstance(self.strategy, ExpertStrategy):
+                    upside = self.strategy.estimate_upside(stock_code, candles, current_price)
+
+                    # 목표가 갱신 (분석 결과가 더 높으면 상향)
+                    if upside["target_price"] > pos.target_price:
+                        old_target = pos.target_price
+                        pos.target_price = upside["target_price"]
+                        pos.estimated_upside = upside["upside_pct"]
+                        logger.info(
+                            "  📈 목표가 상향: %s → %s원 (상승여력=%.1f%%)",
+                            f"{old_target:,}" if old_target else "미정",
+                            f"{pos.target_price:,}", upside["upside_pct"],
+                        )
+
+                    if upside["should_hold"]:
+                        # 아직 상승여력이 남아있으면 홀딩
+                        logger.info(
+                            "  → 홀딩 유지: 상승여력=%.1f%% 모멘텀=%.2f 추세=%s | %s",
+                            upside["upside_pct"], upside["momentum_score"],
+                            "살아있음" if upside["trend_alive"] else "약화",
+                            upside["reason"],
+                        )
+                    else:
+                        # 추세 소진 → 매도
+                        should_sell = True
+                        sell_reason = f"추세소진(여력={upside['upside_pct']:.1f}%) | {upside['reason']}"
+                        logger.info(
+                            "  → 추세 소진: 상승여력=%.1f%% 모멘텀=%.2f → 매도 실행",
+                            upside["upside_pct"], upside["momentum_score"],
+                        )
                 else:
-                    logger.info("  → 손실 중(%.2f%%) - 회복 대기 (손절만 작동)", pos.profit_rate)
+                    # Expert가 아닌 전략: 기존 방식 (수익 2% 이상 + 매도 신호)
+                    if pos.profit_rate > 2.0 and signal.strength >= 0.15:
+                        should_sell = True
+
+                # ── 목표가 도달 확인 (무조건 매도) ──
+                if pos.target_price > 0 and current_price["price"] >= pos.target_price:
+                    should_sell = True
+                    sell_reason = f"목표가 도달({pos.target_price:,}원) 수익률={pos.profit_rate:.1f}%"
+                    logger.info(
+                        "  🎯 목표가 도달! %s원 >= %s원 → 매도",
+                        f"{current_price['price']:,}", f"{pos.target_price:,}",
+                    )
+
+                # ── 매도 실행 ──
+                if should_sell:
+                    pr = pos.profit_rate
+                    self.order_manager.execute_sell(stock_code, sell_reason)
+                    self._on_trade_completed(stock_code, pr, "SELL")
 
     def _log_status(self) -> None:
         """현재 상태를 로그에 출력한다."""
