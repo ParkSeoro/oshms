@@ -18,6 +18,7 @@ from strategy.base import BaseStrategy, Signal, SignalType
 from strategy.expert import ExpertStrategy
 from strategy.market_context import MarketContextAnalyzer, MarketContext
 from trading.order_manager import OrderManager
+from trading.state_manager import StateManager
 from utils.logger import setup_logger
 
 logger = setup_logger("oshms.trading.trader")
@@ -57,6 +58,9 @@ class AutoTrader:
 
         # 레짐 전략 조정값 (v2.9)
         self._regime_adj: dict = {}
+
+        # 누적 통계 관리
+        self._state_mgr = StateManager()
 
         if isinstance(strategy, ExpertStrategy):
             self._market_analyzer = MarketContextAnalyzer(api)
@@ -117,6 +121,13 @@ class AutoTrader:
     def stop(self) -> None:
         """자동 매매를 중지한다."""
         self._running = False
+        # 세션 종료 기록
+        try:
+            sells = [t for t in self.order_manager.trade_history if t.side == "SELL"]
+            session_profit = sum(t.profit_loss for t in sells[-self._trades_since_evolution:]) if sells else 0
+            self._state_mgr.end_session(self._trades_since_evolution, session_profit)
+        except Exception as e:
+            logger.warning("세션 종료 기록 실패: %s", e)
         logger.info("자동 매매 중지 (총 %d 사이클)", self._cycle_count)
 
     # ──────────────────────────────────────────────
@@ -529,8 +540,18 @@ class AutoTrader:
 
     def _on_trade_completed(self, stock_code: str = "", profit_rate: float = 0,
                                decision: str = ""):
-        """매도 완료 시 진화 카운터 증가 + 종목별 학습 + 레짐/패턴 기록."""
+        """매도 완료 시 진화 카운터 증가 + 누적 통계 기록 + 종목별 학습 + 레짐/패턴 기록."""
         self._trades_since_evolution += 1
+
+        # 누적 통계 기록 (StateManager)
+        try:
+            last_trade = self.order_manager.trade_history[-1] if self.order_manager.trade_history else None
+            if last_trade and last_trade.side == "SELL":
+                profit = float(last_trade.profit_loss)
+                is_win = profit > 0
+                self._state_mgr.record_trade(profit, is_win)
+        except Exception as e:
+            logger.warning("누적 통계 기록 실패: %s", e)
 
         # 종목별 임계값 학습
         if stock_code and isinstance(self.strategy, ExpertStrategy):

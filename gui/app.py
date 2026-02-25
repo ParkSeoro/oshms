@@ -384,13 +384,17 @@ class OshmsApp:
         self._section_header(inner, "진화 엔진 상태")
         evo_card = self._make_card(inner, padx=22, pady=18)
         evo_card.pack(fill=tk.X, padx=28, pady=(0, 4))
-        self.evo_detail_text = tk.Text(evo_card, height=7,
+        self.evo_detail_text = tk.Text(evo_card, height=10,
                                         font=(self.MONO, 10),
                                         bg=c["card"], fg=c["fg2"],
                                         relief=tk.FLAT, wrap=tk.WORD,
                                         state=tk.DISABLED,
                                         highlightthickness=0)
-        self.evo_detail_text.pack(fill=tk.X)
+        evo_sb = ttk.Scrollbar(evo_card, orient=tk.VERTICAL,
+                               command=self.evo_detail_text.yview)
+        self.evo_detail_text.configure(yscrollcommand=evo_sb.set)
+        self.evo_detail_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        evo_sb.pack(side=tk.RIGHT, fill=tk.Y)
         self._load_evolution_details()
 
         # ── 보유 종목 ──
@@ -426,13 +430,17 @@ class OshmsApp:
         trades_card = self._make_card(inner)
         trades_card.pack(fill=tk.X, padx=28, pady=(0, 4))
         self.trades_tree = ttk.Treeview(trades_card, columns=trade_cols,
-                                        show="headings", height=4)
+                                        show="headings", height=8)
         for col in trade_cols:
             self.trades_tree.heading(col, text=col)
             w = 150 if col == "시간" else 120 if col == "종목" else 85
             anchor = tk.E if col in ("수량", "가격", "손익") else tk.W
             self.trades_tree.column(col, width=w, anchor=anchor)
-        self.trades_tree.pack(fill=tk.BOTH, expand=True)
+        trades_sb = ttk.Scrollbar(trades_card, orient=tk.VERTICAL,
+                                  command=self.trades_tree.yview)
+        self.trades_tree.configure(yscrollcommand=trades_sb.set)
+        self.trades_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        trades_sb.pack(side=tk.RIGHT, fill=tk.Y)
 
         # ── 새로고침 버튼 ──
         btn_f = tk.Frame(inner, bg=c["bg"])
@@ -1432,17 +1440,8 @@ class OshmsApp:
                     text=f"이전: {resume['strategy']} ({resume['market']}) | {resume['last_active']}")
                 self.resume_btn.pack(side=tk.LEFT, padx=10)
 
-            # StateManager 누적 통계로 자산현황 카드 초기화
-            stats = self._state_mgr.get_stats_summary()
-            c = self.c
-            if stats.get("total_profit", 0) != 0:
-                tp = stats["total_profit"]
-                self.card_labels["total_profit"].config(
-                    text=f"{tp:+,.0f} 원",
-                    fg=c["green"] if tp >= 0 else c["red"])
-            if stats.get("total_trades", 0) > 0:
-                self.card_labels["today_trades"].config(
-                    text=f"누적 {stats['total_trades']} 건")
+            # StateManager 누적 통계는 stat_labels(누적 통계 섹션)에서 표시
+            # card_labels는 실시간 잔고 데이터용이므로 여기서 덮어쓰지 않음
         except Exception:
             pass
 
@@ -1507,7 +1506,7 @@ class OshmsApp:
             today_count = 0
             from datetime import datetime
             today = datetime.now().strftime("%Y-%m-%d")
-            for t in data[-10:]:
+            for t in data[-30:]:
                 ts = t.get("timestamp", "")[:16]
                 self.trades_tree.insert("", 0, values=(
                     ts, t.get("stock_name", ""), t.get("side", ""),
