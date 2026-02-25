@@ -12,7 +12,7 @@ class TestSettings(unittest.TestCase):
     def test_default_values(self):
         s = Settings()
         self.assertEqual(s.app_key, "")
-        self.assertTrue(s.is_mock)
+        self.assertFalse(s.is_mock)
         self.assertEqual(s.max_buy_amount, 500_000)
         self.assertEqual(s.stop_loss_pct, -2.0)
         self.assertEqual(s.take_profit_pct, 3.0)
