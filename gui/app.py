@@ -87,7 +87,7 @@ class OshmsApp:
         "TKSE": ("09:00~15:00 (KST)", False),
     }
 
-    VERSION = "2.8.0"
+    VERSION = "2.9.0"
 
     ROADMAP = [
         ("v2.4", "AI 분석 (OpenAI/Claude)", True),
@@ -106,10 +106,14 @@ class OshmsApp:
         ("v2.7", "실시간 차트 시각화 엔진", True),
         ("v2.8", "프리미엄 다크 테마 v3 (Bloomberg/Arc)", True),
         ("v2.8", "종목분석 드롭다운 + 섹터 빠른선택", True),
-        ("v2.9", "텔레그램 알림 봇", False),
-        ("v2.9", "포트폴리오 리밸런싱", False),
-        ("v3.0", "안드로이드 앱 (PWA)", False),
-        ("v3.0", "멀티 계좌 지원", False),
+        ("v2.9", "레짐 적응형 전략 전환 (상승→공격, 하락→방어, 횡보→스캘핑)", True),
+        ("v2.9", "멀티 타임프레임 확인 (분봉+일봉 동시 추세 일치 강화)", True),
+        ("v2.9", "자동 리스크 진화 (손절/익절/트레일링 파라미터 자가 최적화)", True),
+        ("v2.9", "패턴 메모리 DB (과거 유사 패턴 검색→성공률 기반 예측)", True),
+        ("v3.0", "전략 앙상블 (Expert+Momentum+Scalping 성과 기반 자동 배분)", False),
+        ("v3.0", "강화학습 보상 시스템 (매매 결과→상태-행동 Q-값 학습)", False),
+        ("v3.1", "실시간 포트폴리오 최적화 (종목간 상관관계+Sharpe 극대화)", False),
+        ("v3.1", "자동 매매 복기 (AI가 과거 매매 분석→개선점 자동 적용)", False),
     ]
 
     # ──── 폰트 설정 ────
@@ -1427,6 +1431,18 @@ class OshmsApp:
                 self.resume_label.config(
                     text=f"이전: {resume['strategy']} ({resume['market']}) | {resume['last_active']}")
                 self.resume_btn.pack(side=tk.LEFT, padx=10)
+
+            # StateManager 누적 통계로 자산현황 카드 초기화
+            stats = self._state_mgr.get_stats_summary()
+            c = self.c
+            if stats.get("total_profit", 0) != 0:
+                tp = stats["total_profit"]
+                self.card_labels["total_profit"].config(
+                    text=f"{tp:+,.0f} 원",
+                    fg=c["green"] if tp >= 0 else c["red"])
+            if stats.get("total_trades", 0) > 0:
+                self.card_labels["today_trades"].config(
+                    text=f"누적 {stats['total_trades']} 건")
         except Exception:
             pass
 
@@ -1462,15 +1478,21 @@ class OshmsApp:
             self.stat_labels["best_trade"].config(
                 text=f"{best:+,.0f} 원")
 
-            # 진화 세대 표시
+            # 진화 세대 표시 (통계 카드 + 헤더 동시 갱신)
             evo_file = Path("data/evolution_state.json")
             if evo_file.exists():
                 try:
                     evo = json.loads(evo_file.read_text(encoding="utf-8"))
                     gen = evo.get("generation", 0)
+                    best = evo.get("best_fitness", 0)
                     self.stat_labels["evo_gen"].config(text=f"#{gen}")
+                    self.evo_label.config(
+                        text=f"진화 #{gen}  적합도 {best:.0f}")
                 except Exception:
                     pass
+            else:
+                self.stat_labels["evo_gen"].config(text="#0")
+                self.evo_label.config(text="진화 #0  대기")
         except (json.JSONDecodeError, OSError):
             pass
 

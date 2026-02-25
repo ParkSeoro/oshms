@@ -36,6 +36,19 @@ class EvolutionState:
     best_fitness: float = 0
     best_generation: int = 0
 
+    # v2.9: 레짐별 전략 성과 기록
+    regime_performance: dict = field(default_factory=dict)
+    # v2.9: 자동 리스크 파라미터 진화
+    risk_params: dict = field(default_factory=lambda: {
+        "stop_loss_pct": -3.0,
+        "trailing_base": 3.0,
+        "take_profit_pct": 20.0,
+        "cooldown_seconds": 900,
+    })
+    risk_evolution_history: list[dict] = field(default_factory=list)
+    # v2.9: 패턴 메모리 DB
+    pattern_memory: list[dict] = field(default_factory=list)
+
 
 class EvolutionEngine:
     """자동 진화 엔진.
@@ -112,7 +125,11 @@ class EvolutionEngine:
                     if param_key in params:
                         weight_adj[weight_key] = params[param_key] - 0.20  # 차이값을 조정으로
 
-        # 5단계: 적합도(fitness) 평가
+        # 5단계: 리스크 파라미터 자동 진화 (v2.9)
+        risk_params = self.evolve_risk_params(trades)
+        result["risk_params"] = risk_params
+
+        # 6단계: 적합도(fitness) 평가
         fitness = self._evaluate_fitness(trades)
         result["fitness"] = fitness
 
@@ -364,6 +381,314 @@ class EvolutionEngine:
             + risk_score * 0.15
         )
         return round(fitness, 1)
+
+    # ──────────────────────────────────────────────
+    # v2.9: 레짐 적응형 전략 전환
+    # ──────────────────────────────────────────────
+
+    def record_regime_trade(self, regime: str, profit_rate: float,
+                             strategy_mode: str = "expert"):
+        """시장 레짐별 매매 성과를 기록한다.
+
+        레짐(상승/하락/횡보/급변)에서 어떤 전략이 잘 먹혔는지 학습.
+        """
+        rp = self.state.regime_performance
+        if regime not in rp:
+            rp[regime] = {"trades": 0, "wins": 0, "total_profit": 0,
+                          "strategies": {}}
+        rp[regime]["trades"] += 1
+        rp[regime]["total_profit"] += profit_rate
+        if profit_rate > 0:
+            rp[regime]["wins"] += 1
+
+        # 전략별 성과
+        strats = rp[regime]["strategies"]
+        if strategy_mode not in strats:
+            strats[strategy_mode] = {"trades": 0, "wins": 0, "profit": 0}
+        strats[strategy_mode]["trades"] += 1
+        strats[strategy_mode]["profit"] += profit_rate
+        if profit_rate > 0:
+            strats[strategy_mode]["wins"] += 1
+
+    def get_regime_strategy(self, regime: str) -> dict:
+        """현재 레짐에 최적화된 전략 조정값을 반환한다.
+
+        학습된 레짐별 성과가 충분하면 공격/방어 모드를 자동 전환.
+
+        Returns:
+            dict with keys:
+            - mode: "aggressive" / "defensive" / "scalping" / "normal"
+            - buy_threshold_adj: 매수 임계값 조정
+            - sell_threshold_adj: 매도 임계값 조정
+            - position_size_mult: 포지션 크기 배수
+            - reason: 판단 근거
+        """
+        rp = self.state.regime_performance.get(regime, {})
+        total = rp.get("trades", 0)
+
+        result = {"mode": "normal", "buy_threshold_adj": 0,
+                  "sell_threshold_adj": 0, "position_size_mult": 1.0,
+                  "reason": "기본 모드"}
+
+        # 충분한 학습 데이터 없으면 기본 규칙 사용
+        if total < 5:
+            if regime == "trending_up":
+                result.update(mode="aggressive", buy_threshold_adj=-0.05,
+                              position_size_mult=1.2,
+                              reason=f"상승장 기본 공격 (학습 데이터 부족, {total}건)")
+            elif regime == "trending_down":
+                result.update(mode="defensive", buy_threshold_adj=0.10,
+                              sell_threshold_adj=-0.05, position_size_mult=0.6,
+                              reason=f"하락장 기본 방어 (학습 데이터 부족, {total}건)")
+            elif regime == "volatile":
+                result.update(mode="scalping", buy_threshold_adj=0.08,
+                              position_size_mult=0.5,
+                              reason=f"급변장 기본 스캘핑 (학습 데이터 부족, {total}건)")
+            return result
+
+        # 학습된 성과 기반 전략 전환
+        win_rate = (rp["wins"] / total * 100) if total > 0 else 50
+        avg_profit = rp["total_profit"] / total if total > 0 else 0
+
+        if regime == "trending_up":
+            if win_rate > 60 and avg_profit > 1.0:
+                result.update(mode="aggressive", buy_threshold_adj=-0.08,
+                              position_size_mult=1.3,
+                              reason=f"상승장 공격 (승률={win_rate:.0f}% 수익률={avg_profit:.1f}%)")
+            elif win_rate < 40:
+                result.update(mode="defensive", buy_threshold_adj=0.05,
+                              position_size_mult=0.8,
+                              reason=f"상승장이나 성과부진→방어 (승률={win_rate:.0f}%)")
+            else:
+                result.update(mode="normal",
+                              reason=f"상승장 보통 (승률={win_rate:.0f}%)")
+
+        elif regime == "trending_down":
+            if win_rate > 50:
+                result.update(mode="defensive", buy_threshold_adj=0.08,
+                              sell_threshold_adj=-0.03, position_size_mult=0.7,
+                              reason=f"하락장 방어 (승률={win_rate:.0f}% 양호)")
+            else:
+                result.update(mode="defensive", buy_threshold_adj=0.15,
+                              sell_threshold_adj=-0.08, position_size_mult=0.4,
+                              reason=f"하락장 강방어 (승률={win_rate:.0f}% 저조)")
+
+        elif regime == "volatile":
+            if avg_profit > 0:
+                result.update(mode="scalping", buy_threshold_adj=0.05,
+                              position_size_mult=0.6,
+                              reason=f"급변장 스캘핑 (평균수익={avg_profit:.1f}%)")
+            else:
+                result.update(mode="defensive", buy_threshold_adj=0.12,
+                              position_size_mult=0.3,
+                              reason=f"급변장 손실→초방어 (평균수익={avg_profit:.1f}%)")
+
+        elif regime == "ranging":
+            result.update(mode="scalping", buy_threshold_adj=0.03,
+                          position_size_mult=0.8,
+                          reason=f"횡보장 스캘핑 (승률={win_rate:.0f}%)")
+
+        logger.info("[레짐 전략] %s → %s | %s", regime, result["mode"], result["reason"])
+        return result
+
+    # ──────────────────────────────────────────────
+    # v2.9: 자동 리스크 파라미터 진화
+    # ──────────────────────────────────────────────
+
+    def evolve_risk_params(self, trades: list[dict]) -> dict:
+        """거래 결과를 분석하여 리스크 파라미터를 자동 진화시킨다.
+
+        - 손절이 너무 자주 → 손절폭 확대
+        - 손절이 너무 드물고 큰 손실 → 손절폭 축소
+        - 트레일링이 너무 일찍 → 트레일링 확대
+        - 익절이 너무 일찍 → 익절 상향
+        """
+        sells = [t for t in trades if t.get("side") == "SELL"]
+        if len(sells) < 10:
+            return self.state.risk_params
+
+        rp = self.state.risk_params
+        changes = []
+
+        # 손절 분석
+        stop_losses = [t for t in sells if "손절" in t.get("reason", "")]
+        stop_rate = len(stop_losses) / len(sells) * 100
+        avg_stop_loss = (sum(t.get("profit_rate", 0) for t in stop_losses) / len(stop_losses)
+                         if stop_losses else 0)
+
+        if stop_rate > 30:
+            # 손절 너무 자주 → 폭 확대 (더 참기)
+            old = rp["stop_loss_pct"]
+            rp["stop_loss_pct"] = max(-8.0, old - 0.5)
+            changes.append(f"손절폭 확대: {old:.1f}%→{rp['stop_loss_pct']:.1f}% (빈도={stop_rate:.0f}%)")
+        elif stop_rate < 5 and any(t.get("profit_rate", 0) < -5 for t in sells):
+            # 손절 드문데 큰 손실 있음 → 폭 축소
+            old = rp["stop_loss_pct"]
+            rp["stop_loss_pct"] = min(-1.5, old + 0.5)
+            changes.append(f"손절폭 축소: {old:.1f}%→{rp['stop_loss_pct']:.1f}%")
+
+        # 트레일링 분석
+        trailing_sells = [t for t in sells if "트레일링" in t.get("reason", "")]
+        if trailing_sells:
+            trailing_profits = [t.get("profit_rate", 0) for t in trailing_sells]
+            avg_trail = sum(trailing_profits) / len(trailing_profits)
+            if avg_trail < 2.0 and len(trailing_sells) > 3:
+                # 트레일링이 너무 일찍 발동 → 확대
+                old = rp["trailing_base"]
+                rp["trailing_base"] = min(6.0, old + 0.5)
+                changes.append(f"트레일링 확대: {old:.1f}%→{rp['trailing_base']:.1f}% (평균수익={avg_trail:.1f}%)")
+            elif avg_trail > 8.0:
+                # 트레일링 적절 — 약간 축소 가능
+                old = rp["trailing_base"]
+                rp["trailing_base"] = max(2.0, old - 0.3)
+                changes.append(f"트레일링 축소: {old:.1f}%→{rp['trailing_base']:.1f}% (평균수익={avg_trail:.1f}%)")
+
+        # 익절 분석
+        profit_sells = [t for t in sells if t.get("profit_rate", 0) > 0]
+        if len(profit_sells) >= 5:
+            max_profit = max(t.get("profit_rate", 0) for t in profit_sells)
+            avg_profit = sum(t.get("profit_rate", 0) for t in profit_sells) / len(profit_sells)
+            # 최대 수익이 익절 라인의 2배 이상 → 익절 상향
+            if max_profit > rp["take_profit_pct"] * 2:
+                old = rp["take_profit_pct"]
+                rp["take_profit_pct"] = min(40.0, old + 2.0)
+                changes.append(f"익절 상향: {old:.0f}%→{rp['take_profit_pct']:.0f}% (최대수익={max_profit:.1f}%)")
+            elif max_profit < rp["take_profit_pct"] * 0.5 and avg_profit < 3.0:
+                old = rp["take_profit_pct"]
+                rp["take_profit_pct"] = max(10.0, old - 2.0)
+                changes.append(f"익절 하향: {old:.0f}%→{rp['take_profit_pct']:.0f}% (평균수익={avg_profit:.1f}%)")
+
+        if changes:
+            self.state.risk_evolution_history.append({
+                "generation": self.state.generation,
+                "changes": changes,
+                "params": dict(rp),
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            })
+            if len(self.state.risk_evolution_history) > 30:
+                self.state.risk_evolution_history = self.state.risk_evolution_history[-30:]
+            logger.info("[리스크 진화] %s", " | ".join(changes))
+
+        return rp
+
+    # ──────────────────────────────────────────────
+    # v2.9: 패턴 메모리 DB
+    # ──────────────────────────────────────────────
+
+    def memorize_pattern(self, stock_code: str, pattern_snapshot: dict,
+                          outcome: dict):
+        """매매 패턴과 결과를 메모리에 저장한다.
+
+        나중에 유사한 패턴이 감지되면 과거 성공률로 매매 판단을 보강한다.
+
+        Args:
+            stock_code: 종목 코드
+            pattern_snapshot: 매매 시점의 기술적 스냅샷
+                {trend_score, momentum_score, rsi, bb_position, volume_ratio,
+                 macd_cross, regime, ...}
+            outcome: 매매 결과
+                {profit_rate, hold_days, decision, reason}
+        """
+        memory = {
+            "stock_code": stock_code,
+            "snapshot": pattern_snapshot,
+            "outcome": outcome,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        self.state.pattern_memory.append(memory)
+
+        # 최대 500개 유지 (FIFO)
+        if len(self.state.pattern_memory) > 500:
+            self.state.pattern_memory = self.state.pattern_memory[-500:]
+
+    def recall_similar_patterns(self, current_snapshot: dict,
+                                  top_k: int = 5) -> dict:
+        """현재 기술적 스냅샷과 유사한 과거 패턴을 검색한다.
+
+        유사도 기반 가중 투표로 예상 결과를 산출한다.
+
+        Returns:
+            dict with keys:
+            - matches: 유사 패턴 수
+            - avg_profit: 유사 패턴의 평균 수익률
+            - win_rate: 유사 패턴의 승률
+            - confidence: 신뢰도 (0~1)
+            - bias: "bullish" / "bearish" / "neutral"
+            - similar_patterns: 상위 유사 패턴 리스트
+        """
+        if len(self.state.pattern_memory) < 10:
+            return {"matches": 0, "avg_profit": 0, "win_rate": 0,
+                    "confidence": 0, "bias": "neutral", "similar_patterns": []}
+
+        # 유사도 계산 (유클리드 거리 기반)
+        scored = []
+        keys = ["trend_score", "momentum_score", "rsi", "bb_position",
+                "volume_ratio"]
+        current_vals = [current_snapshot.get(k, 0) for k in keys]
+
+        # 정규화 범위
+        norms = {"trend_score": 2.0, "momentum_score": 2.0, "rsi": 100.0,
+                 "bb_position": 1.0, "volume_ratio": 5.0}
+
+        for mem in self.state.pattern_memory:
+            snap = mem.get("snapshot", {})
+            mem_vals = [snap.get(k, 0) for k in keys]
+
+            # 정규화된 유클리드 거리
+            dist = 0
+            for i, key in enumerate(keys):
+                norm = norms.get(key, 1.0)
+                diff = (current_vals[i] - mem_vals[i]) / norm if norm > 0 else 0
+                dist += diff ** 2
+            dist = dist ** 0.5
+            similarity = max(0, 1.0 - dist)
+            scored.append((similarity, mem))
+
+        # 상위 K개 추출
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = scored[:top_k]
+
+        if not top or top[0][0] < 0.3:
+            return {"matches": 0, "avg_profit": 0, "win_rate": 0,
+                    "confidence": 0, "bias": "neutral", "similar_patterns": []}
+
+        # 가중 투표
+        total_weight = sum(s for s, _ in top)
+        weighted_profit = sum(s * m["outcome"].get("profit_rate", 0) for s, m in top)
+        avg_profit = weighted_profit / total_weight if total_weight > 0 else 0
+
+        wins = sum(1 for _, m in top if m["outcome"].get("profit_rate", 0) > 0)
+        win_rate = wins / len(top) * 100
+
+        # 유사도가 높을수록 신뢰도 상승
+        confidence = min(1.0, top[0][0] * 0.6 + (len(top) / top_k) * 0.4)
+
+        bias = "neutral"
+        if avg_profit > 1.0 and win_rate > 55:
+            bias = "bullish"
+        elif avg_profit < -0.5 and win_rate < 45:
+            bias = "bearish"
+
+        similar = [{
+            "similarity": round(s, 3),
+            "profit_rate": m["outcome"].get("profit_rate", 0),
+            "decision": m["outcome"].get("decision", ""),
+            "timestamp": m.get("timestamp", ""),
+        } for s, m in top]
+
+        logger.info(
+            "[패턴 메모리] %d개 유사 패턴: 평균수익=%.1f%% 승률=%.0f%% 편향=%s",
+            len(top), avg_profit, win_rate, bias,
+        )
+
+        return {
+            "matches": len(top),
+            "avg_profit": round(avg_profit, 2),
+            "win_rate": round(win_rate, 1),
+            "confidence": round(confidence, 3),
+            "bias": bias,
+            "similar_patterns": similar,
+        }
 
     def _load_state(self) -> EvolutionState:
         if EVOLUTION_FILE.exists():

@@ -802,6 +802,101 @@ class ExpertStrategy(BaseStrategy):
             "reason": " | ".join(reasons) if reasons else "분석 데이터 부족",
         }
 
+    # ──────────────────────────────────────────────
+    # v2.9: 멀티 타임프레임 확인
+    # ──────────────────────────────────────────────
+
+    def multi_timeframe_confirm(self, stock_code: str,
+                                 short_candles: list[dict],
+                                 long_candles: list[dict],
+                                 current_price: dict) -> dict:
+        """분봉과 일봉의 추세를 동시에 확인하여 매매 신호를 강화/약화한다.
+
+        - 분봉(단기) + 일봉(장기) 추세가 같은 방향 → 강화
+        - 분봉과 일봉 추세가 반대 → 약화
+        - 일봉이 강한 상승추세인데 분봉에서 눌림 → 최고의 매수 기회
+
+        Returns:
+            dict:
+            - alignment: "aligned_up", "aligned_down", "divergent", "pullback_buy"
+            - strength_adj: 신호 강도 조정값 (-0.2 ~ +0.2)
+            - reason: 판단 근거
+        """
+        price = current_price.get("price", 0)
+        if not short_candles or not long_candles or price <= 0:
+            return {"alignment": "unknown", "strength_adj": 0, "reason": "데이터 부족"}
+
+        short_sorted = self._ensure_ascending(short_candles)
+        long_sorted = self._ensure_ascending(long_candles)
+
+        short_snap = self.technical.analyze(short_sorted, price)
+        long_snap = self.technical.analyze(long_sorted, price)
+
+        short_trend = short_snap.trend_score
+        long_trend = long_snap.trend_score
+
+        result = {"alignment": "unknown", "strength_adj": 0, "reason": ""}
+
+        # 장기 상승 + 단기 상승 = 강한 매수
+        if long_trend > 0.3 and short_trend > 0.2:
+            result.update(
+                alignment="aligned_up",
+                strength_adj=0.15,
+                reason=f"장단기 동시 상승 (일봉={long_trend:+.2f} 분봉={short_trend:+.2f})",
+            )
+
+        # 장기 하락 + 단기 하락 = 강한 매도
+        elif long_trend < -0.3 and short_trend < -0.2:
+            result.update(
+                alignment="aligned_down",
+                strength_adj=-0.15,
+                reason=f"장단기 동시 하락 (일봉={long_trend:+.2f} 분봉={short_trend:+.2f})",
+            )
+
+        # 장기 상승 + 단기 눌림(하락) = 최고의 매수 기회 (pullback)
+        elif long_trend > 0.3 and short_trend < -0.1:
+            # 눌림 매수: 일봉 상승추세에서 분봉 조정 → 반등 기대
+            # 단, RSI 과매도 확인
+            if short_snap.rsi < 40:
+                result.update(
+                    alignment="pullback_buy",
+                    strength_adj=0.20,
+                    reason=f"눌림 매수 기회! (일봉 상승={long_trend:+.2f}, 분봉 조정={short_trend:+.2f}, RSI={short_snap.rsi:.0f})",
+                )
+            else:
+                result.update(
+                    alignment="pullback_buy",
+                    strength_adj=0.10,
+                    reason=f"눌림 매수 (일봉={long_trend:+.2f}, 분봉 조정={short_trend:+.2f})",
+                )
+
+        # 장기 하락 + 단기 반등 = 데드캣 바운스 주의
+        elif long_trend < -0.3 and short_trend > 0.2:
+            result.update(
+                alignment="divergent",
+                strength_adj=-0.10,
+                reason=f"데드캣 바운스 주의 (일봉 하락={long_trend:+.2f}, 분봉 반등={short_trend:+.2f})",
+            )
+
+        # 약한 추세 차이
+        else:
+            diff = abs(long_trend - short_trend)
+            if diff < 0.2:
+                result.update(alignment="neutral", strength_adj=0,
+                              reason="장단기 중립")
+            else:
+                result.update(
+                    alignment="divergent",
+                    strength_adj=-0.05,
+                    reason=f"장단기 불일치 (일봉={long_trend:+.2f} 분봉={short_trend:+.2f})",
+                )
+
+        logger.info(
+            "[멀티TF] %s: %s | adj=%+.2f",
+            stock_code, result["reason"], result["strength_adj"],
+        )
+        return result
+
     def _ensure_ascending(self, candles: list[dict]) -> list[dict]:
         """캔들을 과거순(oldest first)으로 정렬한다."""
         if len(candles) < 2:

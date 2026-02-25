@@ -4,6 +4,7 @@
 Expert 모드에서는 시장 컨텍스트와 멀티 타임프레임 분석을 추가한다.
 
 v2.7: 분석 기반 목표가 매도 — 상승여력 소진까지 홀딩
+v2.9: 레짐 적응형 전략 전환, 멀티 타임프레임 확인, 패턴 메모리, 리스크 자동 진화
 """
 
 import json
@@ -53,6 +54,9 @@ class AutoTrader:
         self._stock_cache: list[str] = []
         self._stock_cache_time: float = 0
         self._STOCK_CACHE_TTL = 300  # 5분
+
+        # 레짐 전략 조정값 (v2.9)
+        self._regime_adj: dict = {}
 
         if isinstance(strategy, ExpertStrategy):
             self._market_analyzer = MarketContextAnalyzer(api)
@@ -173,6 +177,17 @@ class AutoTrader:
                 self.strategy.apply_adjustments(adjustments)
                 logger.info("진화 조정 적용: %s", adjustments)
 
+            # v2.9: 리스크 파라미터 자동 진화 적용
+            risk = result.get("risk_params", {})
+            if risk:
+                if risk.get("trailing_base"):
+                    logger.info(
+                        "리스크 진화 적용: 손절=%.1f%% 트레일링=%.1f%% 익절=%.0f%%",
+                        risk.get("stop_loss_pct", -3),
+                        risk.get("trailing_base", 3),
+                        risk.get("take_profit_pct", 20),
+                    )
+
             logger.info(
                 "진화 세대 #%d 완료: 적합도=%.1f (규칙 +%d -%d)",
                 result["generation"], result["fitness"],
@@ -195,7 +210,7 @@ class AutoTrader:
     # ──────────────────────────────────────────────
 
     def _update_market_context(self) -> None:
-        """시장 컨텍스트를 갱신한다."""
+        """시장 컨텍스트를 갱신하고 레짐 적응형 전략을 적용한다."""
         now = time.time()
         if now - self._market_ctx_updated < 60:
             return
@@ -207,12 +222,15 @@ class AutoTrader:
                     self.strategy.set_market_context(self._market_ctx)
                 self._market_ctx_updated = now
 
-                if self._market_ctx:
-                    adj = self._market_analyzer.get_regime_strategy_adjustment(self._market_ctx)
-                    if adj.get("stop_loss_adj", 0) != 0:
-                        logger.debug(
-                            "리스크 조정: 손절=%+.1f%% 포지션배수=%.1f",
-                            adj["stop_loss_adj"], adj["position_size_mult"],
+                # v2.9: 레짐 적응형 전략 전환
+                if self._market_ctx and self._evolution:
+                    regime = self._market_ctx.regime
+                    self._regime_adj = self._evolution.get_regime_strategy(regime)
+                    mode = self._regime_adj.get("mode", "normal")
+                    if mode != "normal":
+                        logger.info(
+                            "🔄 레짐 전략 전환: %s → %s 모드 | %s",
+                            regime, mode, self._regime_adj.get("reason", ""),
                         )
         except Exception as e:
             logger.warning("시장 컨텍스트 갱신 실패: %s", e)
@@ -511,12 +529,46 @@ class AutoTrader:
 
     def _on_trade_completed(self, stock_code: str = "", profit_rate: float = 0,
                                decision: str = ""):
-        """매도 완료 시 진화 카운터 증가 + 종목별 학습."""
+        """매도 완료 시 진화 카운터 증가 + 종목별 학습 + 레짐/패턴 기록."""
         self._trades_since_evolution += 1
 
         # 종목별 임계값 학습
         if stock_code and isinstance(self.strategy, ExpertStrategy):
             self.strategy.learn_from_trade(stock_code, profit_rate, decision)
+
+        # v2.9: 레짐별 매매 성과 기록
+        if self._evolution and self._market_ctx:
+            regime = self._market_ctx.regime
+            self._evolution.record_regime_trade(regime, profit_rate)
+
+        # v2.9: 패턴 메모리 저장 (매도 시 기술적 스냅샷 + 결과 기록)
+        if self._evolution and stock_code:
+            try:
+                snapshot = {"regime": self._market_ctx.regime if self._market_ctx else "unknown"}
+                # 실시간 기술적 분석 스냅샷 수집
+                if isinstance(self.strategy, ExpertStrategy):
+                    try:
+                        cp = self.api.get_current_price(stock_code)
+                        cs = self.api.get_minute_chart(stock_code, period="3")
+                        if cp and cs and len(cs) >= 10:
+                            t = self.strategy.technical.analyze(
+                                self.strategy._ensure_ascending(cs), cp.get("price", 0))
+                            snapshot.update({
+                                "trend_score": round(t.trend_score, 3),
+                                "momentum_score": round(t.momentum_score, 3),
+                                "rsi": round(t.rsi, 1),
+                                "bb_position": round(t.bb_position, 3),
+                                "volume_ratio": round(t.volume_ratio, 2),
+                            })
+                    except Exception:
+                        snapshot.update({
+                            "trend_score": 0, "momentum_score": 0,
+                            "rsi": 50, "bb_position": 0.5, "volume_ratio": 1.0,
+                        })
+                outcome = {"profit_rate": profit_rate, "decision": decision}
+                self._evolution.memorize_pattern(stock_code, snapshot, outcome)
+            except Exception:
+                pass
 
     def _analyze_and_trade(self, stock_code: str) -> None:
         """종목을 분석하고 매매를 실행한다."""
@@ -588,6 +640,32 @@ class AutoTrader:
             if stock_code in self.order_manager.positions:
                 return
 
+            # v2.9: 멀티 타임프레임 확인 (분봉+일봉 동시 확인)
+            if isinstance(self.strategy, ExpertStrategy):
+                try:
+                    daily = self.api.get_daily_chart(stock_code, count=60)
+                    if daily and candles and len(daily) >= 20:
+                        mtf = self.strategy.multi_timeframe_confirm(
+                            stock_code, candles, daily, current_price)
+                        adj = mtf.get("strength_adj", 0)
+                        if adj != 0:
+                            old_str = signal.strength
+                            signal = Signal(
+                                signal_type=signal.signal_type,
+                                stock_code=signal.stock_code,
+                                reason=signal.reason,
+                                strength=max(0, min(1.0, signal.strength + adj)),
+                                target_price=signal.target_price,
+                            )
+                            if adj > 0.1:
+                                logger.info("  📊 멀티TF 강화: %.2f→%.2f | %s",
+                                            old_str, signal.strength, mtf["reason"])
+                            elif adj < -0.05:
+                                logger.info("  📊 멀티TF 약화: %.2f→%.2f | %s",
+                                            old_str, signal.strength, mtf["reason"])
+                except Exception as e:
+                    logger.debug("멀티TF 확인 실패: %s", e)
+
             stock_name = current_price.get("stock_name", stock_code)
             logger.info(
                 "▶ 매수 신호: %s(%s) 가격=%s 강도=%.2f | %s",
@@ -596,8 +674,45 @@ class AutoTrader:
                 signal.strength, signal.reason,
             )
 
-            # 매수 강도 기준 (Expert는 0.25 이상, 일반 0.30 이상)
+            # v2.9: 레짐 적응형 매수 강도 조정
             min_strength = 0.25 if isinstance(self.strategy, ExpertStrategy) else 0.3
+            regime_buy_adj = self._regime_adj.get("buy_threshold_adj", 0)
+            if regime_buy_adj:
+                min_strength = max(0.10, min_strength + regime_buy_adj)
+
+            # v2.9: 패턴 메모리 보강 (유사 패턴 승률로 강도 보정)
+            if self._evolution and isinstance(self.strategy, ExpertStrategy):
+                try:
+                    snap = {
+                        "trend_score": analysis.technical_score if 'analysis' in dir() else 0,
+                        "momentum_score": analysis.pattern_score if 'analysis' in dir() else 0,
+                        "rsi": analysis.technical.rsi if 'analysis' in dir() and analysis.technical else 50,
+                        "bb_position": analysis.technical.bb_position if 'analysis' in dir() and analysis.technical else 0.5,
+                        "volume_ratio": analysis.technical.volume_ratio if 'analysis' in dir() and analysis.technical else 1.0,
+                    }
+                    recall = self._evolution.recall_similar_patterns(snap)
+                    if recall["matches"] >= 3:
+                        if recall["bias"] == "bullish" and recall["confidence"] > 0.5:
+                            signal = Signal(
+                                signal_type=signal.signal_type,
+                                stock_code=signal.stock_code,
+                                reason=signal.reason,
+                                strength=min(1.0, signal.strength + 0.08),
+                                target_price=signal.target_price,
+                            )
+                            logger.info(
+                                "  📚 패턴메모리 강화: +0.08 (유사%d건, 승률=%.0f%%)",
+                                recall["matches"], recall["win_rate"],
+                            )
+                        elif recall["bias"] == "bearish" and recall["confidence"] > 0.5:
+                            logger.info(
+                                "  📚 패턴메모리 경고: 유사패턴 손실 (승률=%.0f%%) → 매수 보류",
+                                recall["win_rate"],
+                            )
+                            return
+                except Exception:
+                    pass
+
             if signal.strength >= min_strength:
                 # 목표가 및 상승여력 계산
                 target_price = getattr(signal, "target_price", 0) or 0
