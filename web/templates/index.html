@@ -1607,6 +1607,11 @@ body::after {
         <div class="settings-section-title">
           <span>&#9878;</span> 매매 설정
         </div>
+        <div class="form-group">
+          <div class="form-label">시작 자본금 (원)</div>
+          <input class="form-input" id="sInitialCapital" value="100000" type="number">
+          <div class="form-hint">총 손익 계산의 기준이 됩니다</div>
+        </div>
         <div class="form-row">
           <div class="form-group">
             <div class="form-label">1회 최대 매수금액 (원)</div>
@@ -1764,10 +1769,15 @@ body::after {
         statusText.textContent = '대기중';
       }
 
+      mockBadge.classList.remove('hidden');
       if (d.mock) {
-        mockBadge.classList.remove('hidden');
+        mockBadge.textContent = 'MOCK';
+        mockBadge.style.background = 'rgba(255,197,84,0.15)';
+        mockBadge.style.color = '#ffc554';
       } else {
-        mockBadge.classList.add('hidden');
+        mockBadge.textContent = 'REAL';
+        mockBadge.style.background = 'rgba(255,77,106,0.15)';
+        mockBadge.style.color = '#ff4d6a';
       }
 
       $('btnStart').disabled = d.trading;
@@ -1806,11 +1816,14 @@ body::after {
       var h = balance.holdings || [];
       var cash = s.available_cash || 0;
       var evalAmt = s.total_eval_amount || 0;
-      var pl = s.total_profit_loss || 0;
-      var buyAmt = s.total_buy_amount || 0;
-      var rate = buyAmt > 0 ? (pl / buyAmt * 100) : 0;
+      var initial = balance.initial_capital || 100000;
 
-      $('dTotalAsset').textContent = fmtWon(evalAmt + cash);
+      /* 총 자산 = 평가금액 + 현금, 총 손익 = 총자산 - 초기자본금 */
+      var totalAsset = evalAmt + cash;
+      var pl = totalAsset - initial;
+      var rate = initial > 0 ? (pl / initial * 100) : 0;
+
+      $('dTotalAsset').textContent = fmtWon(totalAsset);
       $('dCashSub').textContent = '현금: ' + fmtWon(cash);
 
       var plEl = $('dTotalPL');
@@ -2127,6 +2140,7 @@ body::after {
     fetch('/api/settings').then(function(r) { return r.json(); }).then(function(d) {
       $('sAccount').value = d.account_no || '';
       $('sMock').value = d.is_mock ? 'true' : 'false';
+      $('sInitialCapital').value = d.initial_capital || 100000;
       $('sMaxBuy').value = d.max_buy_amount || 500000;
       $('sMaxHold').value = d.max_hold_count || 5;
       $('sStopLoss').value = d.stop_loss_pct || -2.0;
@@ -2143,6 +2157,7 @@ body::after {
       app_secret: $('sAppSecret').value,
       account_no: $('sAccount').value,
       is_mock: $('sMock').value === 'true',
+      initial_capital: Number($('sInitialCapital').value),
       max_buy_amount: Number($('sMaxBuy').value),
       max_hold_count: Number($('sMaxHold').value),
       stop_loss_pct: Number($('sStopLoss').value),
@@ -2157,7 +2172,11 @@ body::after {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     }).then(function(r) { return r.json(); }).then(function() {
-      showToast('설정이 저장되었습니다', 'success');
+      var modeStr = body.is_mock ? '모의투자' : '실전투자';
+      showToast('설정 저장 완료 (투자모드: ' + modeStr + ')', 'success');
+      /* 대시보드 및 상태 즉시 새로고침 */
+      window.refreshDashboard();
+      pollStatus();
     }).catch(function(e) {
       showToast('저장 실패: ' + e.message, 'error');
     });

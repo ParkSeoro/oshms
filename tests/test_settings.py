@@ -16,6 +16,7 @@ class TestSettings(unittest.TestCase):
         self.assertEqual(s.max_buy_amount, 500_000)
         self.assertEqual(s.stop_loss_pct, -2.0)
         self.assertEqual(s.take_profit_pct, 3.0)
+        self.assertEqual(s.initial_capital, 100_000)
 
     def test_mock_url(self):
         s = Settings(is_mock=True)
@@ -70,6 +71,7 @@ class TestSettings(unittest.TestCase):
         os.environ["KIS_ACCOUNT_NO"] = "99999999-01"
         os.environ["KIS_MOCK"] = "true"
         os.environ["MAX_BUY_AMOUNT"] = "1000000"
+        os.environ["INITIAL_CAPITAL"] = "200000"
 
         try:
             s = Settings.from_env()
@@ -78,8 +80,10 @@ class TestSettings(unittest.TestCase):
             self.assertEqual(s.account_no, "99999999-01")
             self.assertTrue(s.is_mock)
             self.assertEqual(s.max_buy_amount, 1_000_000)
+            self.assertEqual(s.initial_capital, 200_000)
         finally:
-            for key in ["KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO", "KIS_MOCK", "MAX_BUY_AMOUNT"]:
+            for key in ["KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO",
+                         "KIS_MOCK", "MAX_BUY_AMOUNT", "INITIAL_CAPITAL"]:
                 os.environ.pop(key, None)
 
 

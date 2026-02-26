@@ -22,6 +22,7 @@ class Settings:
     max_hold_count: int = 5
     stop_loss_pct: float = -2.0
     take_profit_pct: float = 3.0
+    initial_capital: int = 100_000  # 시작 자본금 (원)
 
     # 매매 시간
     trading_start_time: str = "09:05"
@@ -60,6 +61,7 @@ class Settings:
             max_hold_count=int(os.getenv("MAX_HOLD_COUNT", "5")),
             stop_loss_pct=float(os.getenv("STOP_LOSS_PCT", "-2.0")),
             take_profit_pct=float(os.getenv("TAKE_PROFIT_PCT", "3.0")),
+            initial_capital=int(os.getenv("INITIAL_CAPITAL", "100000")),
             trading_start_time=os.getenv("TRADING_START_TIME", "09:05"),
             trading_end_time=os.getenv("TRADING_END_TIME", "15:10"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),

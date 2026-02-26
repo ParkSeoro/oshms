@@ -68,6 +68,8 @@ def api_balance():
         s = _get_settings()
         api = KISApi(s)
         balance = api.get_balance()
+        # 초기 자본금 정보 추가
+        balance["initial_capital"] = s.initial_capital
         return jsonify(balance)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -234,6 +236,7 @@ def api_get_settings():
         "app_key": "***" if s.app_key else "",
         "account_no": s.account_no,
         "is_mock": s.is_mock,
+        "initial_capital": s.initial_capital,
         "max_buy_amount": s.max_buy_amount,
         "max_hold_count": s.max_hold_count,
         "stop_loss_pct": s.stop_loss_pct,
@@ -253,6 +256,7 @@ def api_save_settings():
         "app_secret": "KIS_APP_SECRET",
         "account_no": "KIS_ACCOUNT_NO",
         "is_mock": "KIS_MOCK",
+        "initial_capital": "INITIAL_CAPITAL",
         "max_buy_amount": "MAX_BUY_AMOUNT",
         "max_hold_count": "MAX_HOLD_COUNT",
         "stop_loss_pct": "STOP_LOSS_PCT",

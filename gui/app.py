@@ -291,6 +291,14 @@ class OshmsApp:
         status_f = tk.Frame(self.header, bg=c["bg2"])
         status_f.pack(side=tk.RIGHT, padx=24, pady=10)
 
+        # 투자 모드 뱃지 (모의/실전)
+        mode_text = "MOCK" if self.settings.is_mock else "REAL"
+        mode_color = c["yellow"] if self.settings.is_mock else c["red"]
+        self.mode_label = tk.Label(status_f, text=mode_text,
+                                   font=(self.MONO, 9, "bold"),
+                                   bg=c["bg2"], fg=mode_color)
+        self.mode_label.pack(side=tk.LEFT, padx=(0, 12))
+
         # 진화 세대 뱃지
         self.evo_label = tk.Label(status_f, text="", font=(self.MONO, 9, "bold"),
                                   bg=c["bg2"], fg=c["yellow"])
@@ -1195,6 +1203,7 @@ class OshmsApp:
         self._add_checkbox(inner, "모의투자 모드", "is_mock")
 
         self._add_settings_section(inner, "매매 설정")
+        self._add_field(inner, "시작 자본금 (원)", "initial_capital")
         self._add_field(inner, "1회 최대 매수금액 (원)", "max_buy_amount")
         self._add_field(inner, "최대 보유 종목 수", "max_hold_count")
         self._add_field(inner, "손절 비율 (%)", "stop_loss_pct")
@@ -1507,6 +1516,7 @@ class OshmsApp:
             "app_key": self.settings.app_key,
             "app_secret": self.settings.app_secret,
             "account_no": self.settings.account_no,
+            "initial_capital": str(self.settings.initial_capital),
             "max_buy_amount": str(self.settings.max_buy_amount),
             "max_hold_count": str(self.settings.max_hold_count),
             "stop_loss_pct": str(self.settings.stop_loss_pct),
@@ -1620,11 +1630,22 @@ class OshmsApp:
             pass
 
     def _save_settings(self):
+        # 자동매매 실행 중이면 경고
+        if self._is_trading:
+            proceed = messagebox.askyesno(
+                "경고",
+                "자동매매가 실행 중입니다.\n"
+                "설정 변경은 매매 재시작 후 적용됩니다.\n"
+                "그래도 저장하시겠습니까?")
+            if not proceed:
+                return
+
         env_lines = [
             f"KIS_APP_KEY={self.setting_vars['app_key'].get()}",
             f"KIS_APP_SECRET={self.setting_vars['app_secret'].get()}",
             f"KIS_ACCOUNT_NO={self.setting_vars['account_no'].get()}",
             f"KIS_MOCK={'true' if self.setting_vars['is_mock'].get() else 'false'}",
+            f"INITIAL_CAPITAL={self.setting_vars['initial_capital'].get()}",
             f"MAX_BUY_AMOUNT={self.setting_vars['max_buy_amount'].get()}",
             f"MAX_HOLD_COUNT={self.setting_vars['max_hold_count'].get()}",
             f"STOP_LOSS_PCT={self.setting_vars['stop_loss_pct'].get()}",
@@ -1653,7 +1674,15 @@ class OshmsApp:
 
         self.settings = Settings.from_env()
         self._reset_api()  # 설정 변경 시 API 재연결
-        messagebox.showinfo("설정", "설정이 저장되었습니다.")
+
+        # 모드 뱃지 즉시 업데이트
+        c = self.c
+        mode_text = "MOCK" if self.settings.is_mock else "REAL"
+        mode_color = c["yellow"] if self.settings.is_mock else c["red"]
+        self.mode_label.config(text=mode_text, fg=mode_color)
+
+        mode_str = "모의투자" if self.settings.is_mock else "실전투자"
+        messagebox.showinfo("설정", f"설정이 저장되었습니다.\n투자 모드: {mode_str}")
 
     def _validate_settings(self):
         errors = self.settings.validate()
@@ -1734,13 +1763,18 @@ class OshmsApp:
         c = self.c
         holdings = balance.get("holdings", [])
         summary = balance.get("summary", {})
-        total_buy = summary.get("total_buy_amount", 0)
         total_eval = summary.get("total_eval_amount", 0)
-        total_pl = summary.get("total_profit_loss", 0)
         cash = summary.get("available_cash", 0)
-        rate = (total_pl / total_buy * 100) if total_buy > 0 else 0
 
-        self.card_labels["total_asset"].config(text=f"{total_eval + cash:,.0f} 원")
+        # 총 자산 = 평가금액 + 현금
+        total_asset = total_eval + cash
+
+        # 초기 자본금 기반 총 손익 계산
+        initial = self.settings.initial_capital
+        total_pl = total_asset - initial
+        rate = (total_pl / initial * 100) if initial > 0 else 0
+
+        self.card_labels["total_asset"].config(text=f"{total_asset:,.0f} 원")
         self.card_labels["total_profit"].config(
             text=f"{total_pl:+,.0f} 원",
             fg=c["green"] if total_pl >= 0 else c["red"])

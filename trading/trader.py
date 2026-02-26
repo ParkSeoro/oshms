@@ -241,9 +241,6 @@ class AutoTrader:
         except Exception as e:
             logger.error("진화 실행 실패: %s", e)
 
-        # v3.0: 코드 자체 진화 엔진 실행
-        self._try_code_evolution()
-
     def _try_code_evolution(self):
         """코드 진화 엔진을 실행한다 (프로그램 자체 진화)."""
         if not self._code_evolution:
@@ -269,16 +266,33 @@ class AutoTrader:
             result = self._code_evolution.run_evolution_cycle(trades, candles)
             self._trades_since_code_evolution = 0
 
+            status = result.get("status", "")
+
             # 코드 진화 결과를 전략에 반영
-            if result.get("status") == "evolved":
+            if status == "evolved":
                 evolved_config = self._code_evolution.get_active_config()
                 self._apply_code_evolution(evolved_config)
-
-            logger.info(
-                "코드 진화 사이클 #%d 완료: 상태=%s, 개선=%d건",
-                result.get("cycle", 0), result.get("status", ""),
-                result.get("modules_executed", 0),
-            )
+                logger.info(
+                    "코드 진화 사이클 #%d 완료: 개선 %d건 적용 (점수=%.1f, 약점=%d개)",
+                    result.get("cycle", 0), result.get("modules_executed", 0),
+                    result.get("diagnosis_score", 0), result.get("weaknesses", 0),
+                )
+            elif status == "analyzed":
+                logger.info(
+                    "코드 진화 사이클 #%d: 분석 완료 (점수=%.1f, 약점=%d개) — 조정 불필요",
+                    result.get("cycle", 0),
+                    result.get("diagnosis_score", 0), result.get("weaknesses", 0),
+                )
+            elif status == "rollback":
+                logger.warning(
+                    "코드 진화 사이클 #%d: 성능 악화 감지 → 이전 설정 롤백",
+                    result.get("cycle", 0),
+                )
+            else:
+                logger.info(
+                    "코드 진화 사이클: %s — %s",
+                    status, result.get("reason", ""),
+                )
         except Exception as e:
             logger.error("코드 진화 실행 실패: %s", e)
 
@@ -507,9 +521,10 @@ class AutoTrader:
             except Exception as e:
                 logger.error("[%s] 분석 중 오류: %s", stock_code, e)
 
-        # 4. 진화 체크
+        # 4. 진화 체크 (파라미터 진화 + 코드 자체 진화 독립 실행)
         if self._cycle_count % 5 == 0:
             self._try_evolve()
+            self._try_code_evolution()
 
         if self._cycle_count % 10 == 0:
             self._log_status()
