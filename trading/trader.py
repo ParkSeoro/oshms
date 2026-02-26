@@ -5,6 +5,7 @@ Expert 모드에서는 시장 컨텍스트와 멀티 타임프레임 분석을 �
 
 v2.7: 분석 기반 목표가 매도 — 상승여력 소진까지 홀딩
 v2.9: 레짐 적응형 전략 전환, 멀티 타임프레임 확인, 패턴 메모리, 리스크 자동 진화
+v3.0: 코드 자체 진화 엔진 연동 — 프로그램이 스스로 약점을 파악하고 개선
 """
 
 import json
@@ -46,10 +47,14 @@ class AutoTrader:
         self._cooldown_stocks: dict[str, float] = {}
         self._COOLDOWN_SECONDS = 900  # 15분 쿨다운
 
-        # 진화 엔진
+        # 진화 엔진 (Level 0: 파라미터 진화)
         self._evolution = None
         self._trades_since_evolution = 0
         self._evolution_enabled = True
+
+        # 코드 진화 엔진 (Level 1~3: 프로그램 자체 진화)
+        self._code_evolution = None
+        self._trades_since_code_evolution = 0
 
         # 종목 선정 캐시 (5분마다 갱신)
         self._stock_cache: list[str] = []
@@ -136,24 +141,47 @@ class AutoTrader:
 
     def _init_evolution(self):
         """진화 엔진을 초기화한다."""
+        # Level 0: 파라미터 진화 엔진
         try:
             from learning.evolution import EvolutionEngine
             self._evolution = EvolutionEngine()
-            # 기존 거래 수로 진화 카운터 초기화
             self._trades_since_evolution = self._count_recent_trades()
             logger.info("진화 엔진 초기화 완료 (최근 거래 %d건)", self._trades_since_evolution)
         except Exception as e:
             logger.warning("진화 엔진 초기화 실패: %s", e)
             self._evolution = None
 
+        # Level 1~3: 코드 자체 진화 엔진
+        try:
+            from learning.code_evolution import CodeEvolutionEngine
+            self._code_evolution = CodeEvolutionEngine()
+            self._trades_since_code_evolution = self._count_recent_trades_for_code_evo()
+            logger.info("코드 진화 엔진 초기화 완료 (사이클 #%d, 개선 %d건)",
+                        self._code_evolution.state.cycle,
+                        self._code_evolution.state.total_improvements)
+        except Exception as e:
+            logger.warning("코드 진화 엔진 초기화 실패: %s", e)
+            self._code_evolution = None
+
     def _count_recent_trades(self) -> int:
-        """최근 거래 수를 반환한다."""
+        """최근 거래 수를 반환한다 (파라미터 진화용)."""
         if not TRADES_FILE.exists():
             return 0
         try:
             trades = json.loads(TRADES_FILE.read_text(encoding="utf-8"))
             sells = [t for t in trades if t.get("side") == "SELL"]
             return len(sells) % 15  # 15건마다 진화하므로 나머지
+        except Exception:
+            return 0
+
+    def _count_recent_trades_for_code_evo(self) -> int:
+        """최근 거래 수를 반환한다 (코드 진화용)."""
+        if not TRADES_FILE.exists():
+            return 0
+        try:
+            trades = json.loads(TRADES_FILE.read_text(encoding="utf-8"))
+            sells = [t for t in trades if t.get("side") == "SELL"]
+            return len(sells) % 20  # 20건마다 코드 진화
         except Exception:
             return 0
 
@@ -206,6 +234,85 @@ class AutoTrader:
             )
         except Exception as e:
             logger.error("진화 실행 실패: %s", e)
+
+        # v3.0: 코드 자체 진화 엔진 실행
+        self._try_code_evolution()
+
+    def _try_code_evolution(self):
+        """코드 진화 엔진을 실행한다 (프로그램 자체 진화)."""
+        if not self._code_evolution:
+            return
+        if not self._code_evolution.should_evolve(self._trades_since_code_evolution):
+            return
+
+        logger.info("코드 진화 조건 충족 (%d건) — 자체 진화 사이클 시작",
+                     self._trades_since_code_evolution)
+        try:
+            trades = self._load_trades()
+            if not trades:
+                return
+
+            candles = None
+            held_codes = list(self.order_manager.positions.keys())
+            if held_codes:
+                try:
+                    candles = self.api.get_daily_chart(held_codes[0], count=60)
+                except Exception:
+                    pass
+
+            result = self._code_evolution.run_evolution_cycle(trades, candles)
+            self._trades_since_code_evolution = 0
+
+            # 코드 진화 결과를 전략에 반영
+            if result.get("status") == "evolved":
+                evolved_config = self._code_evolution.get_active_config()
+                self._apply_code_evolution(evolved_config)
+
+            logger.info(
+                "코드 진화 사이클 #%d 완료: 상태=%s, 개선=%d건",
+                result.get("cycle", 0), result.get("status", ""),
+                result.get("modules_executed", 0),
+            )
+        except Exception as e:
+            logger.error("코드 진화 실행 실패: %s", e)
+
+    def _apply_code_evolution(self, config: dict):
+        """코드 진화 결과를 전략에 반영한다."""
+        if not isinstance(self.strategy, ExpertStrategy):
+            return
+
+        adjustments = {}
+
+        # 진입 신호 조정 적용
+        entry = config.get("entry_signals", {})
+        if entry.get("buy_threshold_adj"):
+            adjustments["buy_threshold_adj"] = entry["buy_threshold_adj"]
+
+        # 매도 타이밍 조정 적용
+        exit_cfg = config.get("exit_timing", {})
+        if exit_cfg.get("trailing_base_adj"):
+            adjustments["trailing_base_adj"] = exit_cfg["trailing_base_adj"]
+        if exit_cfg.get("stop_loss_adj"):
+            adjustments["stop_loss_adj"] = exit_cfg["stop_loss_adj"]
+
+        # 레짐 전략 적용
+        regime = config.get("regime_strategies", {})
+        if regime.get("buy_threshold_adj"):
+            adjustments["buy_threshold_adj"] = (
+                adjustments.get("buy_threshold_adj", 0) + regime["buy_threshold_adj"])
+        if regime.get("position_size_mult"):
+            adjustments["position_size_mult"] = regime["position_size_mult"]
+
+        # 지표 가중치 적용
+        weights = config.get("indicator_weights", {})
+        for ind, data in weights.items():
+            if isinstance(data, dict) and "recommended_weight" in data:
+                if ind in ("technical", "pattern", "sentiment", "market"):
+                    adjustments[ind] = data["recommended_weight"] - 0.20
+
+        if adjustments:
+            self.strategy.apply_adjustments(adjustments)
+            logger.info("코드 진화 조정 적용: %s", adjustments)
 
     def _load_trades(self) -> list[dict]:
         """거래 기록을 로드한다."""
@@ -542,6 +649,7 @@ class AutoTrader:
                                decision: str = ""):
         """매도 완료 시 진화 카운터 증가 + 누적 통계 기록 + 종목별 학습 + 레짐/패턴 기록."""
         self._trades_since_evolution += 1
+        self._trades_since_code_evolution += 1
 
         # 누적 통계 기록 (StateManager)
         try:

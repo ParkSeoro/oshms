@@ -397,6 +397,23 @@ class OshmsApp:
         evo_sb.pack(side=tk.RIGHT, fill=tk.Y)
         self._load_evolution_details()
 
+        # ── 코드 자체 진화 엔진 ──
+        self._section_header(inner, "코드 자체 진화 (메타 진화)")
+        code_evo_card = self._make_card(inner, padx=22, pady=18)
+        code_evo_card.pack(fill=tk.X, padx=28, pady=(0, 4))
+        self.code_evo_text = tk.Text(code_evo_card, height=12,
+                                      font=(self.MONO, 10),
+                                      bg=c["card"], fg=c["fg2"],
+                                      relief=tk.FLAT, wrap=tk.WORD,
+                                      state=tk.DISABLED,
+                                      highlightthickness=0)
+        code_evo_sb = ttk.Scrollbar(code_evo_card, orient=tk.VERTICAL,
+                                     command=self.code_evo_text.yview)
+        self.code_evo_text.configure(yscrollcommand=code_evo_sb.set)
+        self.code_evo_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        code_evo_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._load_code_evolution_details()
+
         # ── 보유 종목 ──
         self._section_header(inner, "보유 종목")
         hold_hdr = tk.Frame(inner, bg=c["bg"])
@@ -1390,6 +1407,89 @@ class OshmsApp:
 
         self.evo_detail_text.configure(state=tk.DISABLED)
 
+    def _load_code_evolution_details(self):
+        """코드 자체 진화 엔진 상태를 표시한다."""
+        self.code_evo_text.configure(state=tk.NORMAL)
+        self.code_evo_text.delete("1.0", tk.END)
+
+        state_file = Path("data/code_evolution_state.json")
+        if not state_file.exists():
+            self.code_evo_text.insert(tk.END,
+                "코드 자체 진화 엔진 대기중\n\n"
+                "프로그램이 스스로 약점을 파악하고 개선하는 메타 진화 시스템입니다.\n"
+                "매매가 진행되면 자동으로 작동합니다.\n\n"
+                "진화 계층:\n"
+                " Level 0: 파라미터 튜닝 (가중치, 임계값)\n"
+                " Level 1: 전략 로직 진화 (매매 규칙 생성/조합)\n"
+                " Level 2: 기능 진화 (필터/모듈 활성화)\n"
+                " Level 3: 아키텍처 진화 (전략 블렌딩, 앙상블)\n\n"
+                "자율 진화 사이클:\n"
+                " 1. 성능 진단 → 약점 식별\n"
+                " 2. 진화 모듈 우선순위 결정\n"
+                " 3. 변경 생성 → 검증 → 적용\n"
+                " 4. 성과 모니터링 → 롤백/유지")
+        else:
+            try:
+                data = json.loads(state_file.read_text(encoding="utf-8"))
+                cycle = data.get("cycle", 0)
+                improvements = data.get("total_improvements", 0)
+                rollbacks = data.get("total_rollbacks", 0)
+                last = data.get("last_cycle", "없음")
+                diag = data.get("last_diagnosis", {})
+                score = diag.get("overall_score", 0)
+                roadmap = data.get("roadmap", [])
+                applied = data.get("applied_modules", [])
+                perf = data.get("performance_history", [])
+
+                txt = f"사이클: #{cycle}  |  개선: {improvements}건  |  롤백: {rollbacks}건  |  마지막: {last}\n"
+                txt += f"시스템 점수: {score:.1f}/100\n\n"
+
+                # 성능 추이
+                if perf:
+                    recent = perf[-5:]
+                    txt += "성능 추이:\n"
+                    for p in recent:
+                        s = p.get("score", 0)
+                        bar_len = int(min(s, 100) / 5)
+                        bar = "█" * bar_len + "░" * (20 - bar_len)
+                        txt += f"  #{p.get('cycle', 0):3d}  {bar}  {s:5.1f}\n"
+                    txt += "\n"
+
+                # 약점 목록
+                weaknesses = diag.get("weaknesses", [])
+                if weaknesses:
+                    txt += f"발견된 약점 ({len(weaknesses)}개):\n"
+                    for w in weaknesses[:5]:
+                        sev_icon = {"critical": "!!", "high": "! ", "medium": "- ", "low": "  "}.get(
+                            w.get("severity", ""), "  ")
+                        txt += f"  {sev_icon}{w.get('detail', '')}\n"
+                    txt += "\n"
+
+                # 개발 로드맵
+                active_roadmap = sorted(roadmap, key=lambda m: m.get("priority", 0), reverse=True)
+                if active_roadmap:
+                    txt += "자율 개발 로드맵:\n"
+                    for m in active_roadmap[:6]:
+                        status_icon = {"pending": "◻", "cooldown": "⏳", "applied": "✓"}.get(
+                            m.get("status", ""), "◻")
+                        pri = m.get("priority", 0)
+                        txt += f"  {status_icon} [{pri:4.1f}] {m.get('name', '')}\n"
+                    if len(active_roadmap) > 6:
+                        txt += f"  ... 외 {len(active_roadmap) - 6}개\n"
+                    txt += "\n"
+
+                # 최근 적용 모듈
+                if applied:
+                    txt += f"최근 적용 ({len(applied)}건):\n"
+                    for a in applied[-3:]:
+                        txt += f"  #{a.get('cycle', 0)} {a.get('module_id', '')} — {a.get('reason', '')}\n"
+
+                self.code_evo_text.insert(tk.END, txt)
+            except Exception:
+                self.code_evo_text.insert(tk.END, "코드 진화 상태 로드 실패")
+
+        self.code_evo_text.configure(state=tk.DISABLED)
+
     # ═══════════════════════════════════════════════
     # 설정 로드/저장
     # ═══════════════════════════════════════════════
@@ -1665,6 +1765,7 @@ class OshmsApp:
 
         self._load_trade_history()
         self._load_evolution_details()
+        self._load_code_evolution_details()
         self._update_cumulative_stats()
 
     def _auto_refresh(self):
