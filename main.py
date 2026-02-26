@@ -2,17 +2,21 @@
 """OSHMS - 주식 자동 매매 시스템.
 
 사용법:
-    python main.py trade [--stocks 005930,000660] [--interval 10] [--strategy expert]
-    python main.py report
-    python main.py balance
-    python main.py status
-    python main.py analyze 005930 --name 삼성전자
-    python main.py gui          # 데스크톱 GUI 실행
-    python main.py web          # 웹 서버 실행 (모바일/PC 브라우저)
+    python main.py trade --mock                          # 모의투자
+    python main.py trade --real                          # 실전투자
+    python main.py trade --mock --strategy expert        # 모의투자 + 전문가 전략
+    python main.py trade --real --stocks 005930,000660   # 실전투자 + 종목 지정
+    python main.py balance --mock                        # 모의투자 잔고 조회
+    python main.py balance --real                        # 실전투자 잔고 조회
+    python main.py status                                # 시스템 상태 확인
+    python main.py analyze 005930 --name 삼성전자         # 종목 분석
+    python main.py gui                                   # 데스크톱 GUI 실행
+    python main.py web                                   # 웹 서버 실행
 """
 
 import argparse
 import sys
+from pathlib import Path
 
 from config.settings import Settings
 from api.kis_api import KISApi
@@ -22,6 +26,18 @@ from strategy import (
 from trading.trader import AutoTrader
 from analysis.analyzer import ProfitAnalyzer
 from utils.logger import setup_logger
+
+
+def _apply_mode_override(settings: Settings, args) -> Settings:
+    """CLI에서 --mock / --real 플래그로 모드를 오버라이드한다."""
+    mode_flag = getattr(args, "mode", None)
+    if mode_flag == "mock":
+        settings.is_mock = True
+        settings.base_url = settings.MOCK_URL
+    elif mode_flag == "real":
+        settings.is_mock = False
+        settings.base_url = settings.REAL_URL
+    return settings
 
 
 def cmd_trade(args, settings: Settings) -> None:
@@ -137,8 +153,9 @@ def cmd_balance(args, settings: Settings) -> None:
     api = KISApi(settings)
     balance = api.get_balance()
 
+    mode_str = "모의투자" if settings.is_mock else "실전투자"
     print("=" * 60)
-    print("  보유 종목 현황")
+    print(f"  보유 종목 현황 [{mode_str}]")
     print("=" * 60)
 
     holdings = balance.get("holdings", [])
@@ -184,6 +201,9 @@ def cmd_web(args, settings: Settings) -> None:
 
 def cmd_status(args, settings: Settings) -> None:
     """시스템 상태를 출력한다."""
+    env_path = Path(".env")
+    has_env = env_path.exists()
+
     print("=" * 60)
     print("  OSHMS 시스템 상태")
     print("=" * 60)
@@ -194,6 +214,13 @@ def cmd_status(args, settings: Settings) -> None:
     print(f"  최대 매수금액: {settings.max_buy_amount:,}원")
     print(f"  최대 보유종목: {settings.max_hold_count}개")
     print(f"  손절: {settings.stop_loss_pct}% / 익절: {settings.take_profit_pct}%")
+    print(f"  .env 파일: {'있음' if has_env else '없음 (기본값 사용)'}")
+
+    if not has_env:
+        print()
+        print("  [안내] .env 파일이 없습니다.")
+        print("    cp .env.example .env  로 생성 후 API 키를 입력하세요.")
+        print("    또는 --mock / --real 플래그로 모드를 지정하세요.")
 
     errors = settings.validate()
     if errors:
@@ -207,16 +234,46 @@ def cmd_status(args, settings: Settings) -> None:
     print("=" * 60)
 
 
+def _add_mode_args(parser: argparse.ArgumentParser) -> None:
+    """모든 명령어에 --mock / --real 플래그를 추가한다."""
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--mock", dest="mode", action="store_const", const="mock",
+        help="모의투자 모드로 실행",
+    )
+    mode_group.add_argument(
+        "--real", dest="mode", action="store_const", const="real",
+        help="실전투자 모드로 실행",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="OSHMS - 주식 자동 매매 시스템 (전문가 모드)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+모드 선택:
+  --mock    모의투자 (API: openapivts)
+  --real    실전투자 (API: openapi)
+
+  모드를 지정하지 않으면 .env 파일의 KIS_MOCK 값을 사용합니다.
+  .env 파일이 없으면 안전을 위해 모의투자로 실행됩니다.
+
+사용 예시:
+  python main.py trade --mock                     모의투자 자동매매
+  python main.py trade --real                     실전투자 자동매매
+  python main.py trade --real --strategy expert   실전 + 전문가 전략
+  python main.py balance --mock                   모의투자 잔고 조회
+  python main.py balance --real                   실전투자 잔고 조회
+  python main.py status                           시스템 상태 확인
+""",
     )
     parser.add_argument("--env", help=".env 파일 경로", default=None)
     subparsers = parser.add_subparsers(dest="command", help="명령어")
 
     # trade 명령어
     trade_parser = subparsers.add_parser("trade", help="자동 매매 실행")
+    _add_mode_args(trade_parser)
     trade_parser.add_argument(
         "--stocks", help="감시할 종목 코드 (콤마 구분, 예: 005930,000660)", default=None
     )
@@ -232,6 +289,7 @@ def main() -> None:
 
     # analyze 명령어
     analyze_parser = subparsers.add_parser("analyze", help="종목 전문가 분석 (매매 없이)")
+    _add_mode_args(analyze_parser)
     analyze_parser.add_argument("code", help="종목 코드 (예: 005930)")
     analyze_parser.add_argument("--name", help="종목명 (예: 삼성전자)", default=None)
 
@@ -240,10 +298,12 @@ def main() -> None:
     report_parser.add_argument("--csv", action="store_true", help="CSV 파일도 생성")
 
     # balance 명령어
-    subparsers.add_parser("balance", help="잔고 조회")
+    balance_parser = subparsers.add_parser("balance", help="잔고 조회")
+    _add_mode_args(balance_parser)
 
     # status 명령어
-    subparsers.add_parser("status", help="시스템 상태 확인")
+    status_parser = subparsers.add_parser("status", help="시스템 상태 확인")
+    _add_mode_args(status_parser)
 
     # gui 명령어
     subparsers.add_parser("gui", help="데스크톱 GUI 실행")
@@ -260,7 +320,27 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
+    # 설정 로드
     settings = Settings.from_env(args.env)
+
+    # CLI --mock / --real 플래그로 모드 오버라이드
+    settings = _apply_mode_override(settings, args)
+
+    # .env 파일 존재 여부 확인 및 안내
+    env_path = Path(args.env) if args.env else Path(".env")
+    mode_flag = getattr(args, "mode", None)
+    if not env_path.exists() and mode_flag is None and args.command not in ("gui", "web", "report"):
+        mode_str = "모의투자" if settings.is_mock else "실전투자"
+        print(f"[안내] .env 파일이 없습니다. 기본값({mode_str})으로 실행합니다.")
+        print(f"       --mock 또는 --real 플래그로 모드를 명시할 수 있습니다.")
+        print()
+
+    # 모드 확인 메시지
+    if mode_flag and args.command not in ("gui", "web", "report"):
+        mode_str = "모의투자" if settings.is_mock else "실전투자"
+        print(f"[{mode_str}] 모드로 실행합니다. (API: {settings.base_url})")
+        print()
+
     setup_logger("oshms", settings.log_level)
 
     commands = {
