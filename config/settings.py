@@ -15,7 +15,7 @@ class Settings:
     app_key: str = ""
     app_secret: str = ""
     account_no: str = ""
-    is_mock: bool = False
+    is_mock: bool = True
 
     # 매매 설정
     max_buy_amount: int = 500_000
@@ -55,7 +55,7 @@ class Settings:
             app_key=os.getenv("KIS_APP_KEY", ""),
             app_secret=os.getenv("KIS_APP_SECRET", ""),
             account_no=os.getenv("KIS_ACCOUNT_NO", ""),
-            is_mock=os.getenv("KIS_MOCK", "false").lower() == "true",
+            is_mock=os.getenv("KIS_MOCK", "true").lower() == "true",
             max_buy_amount=int(os.getenv("MAX_BUY_AMOUNT", "500000")),
             max_hold_count=int(os.getenv("MAX_HOLD_COUNT", "5")),
             stop_loss_pct=float(os.getenv("STOP_LOSS_PCT", "-2.0")),

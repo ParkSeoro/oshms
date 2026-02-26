@@ -1,12 +1,17 @@
-"""전문가 전략 엔진.
+"""전문가 전략 엔진 (워렌 버핏 가치투자 + 고급 기술분석 융합).
 
-기술적 분석, 캔들 패턴, 뉴스 감성, 시장 컨텍스트를
-종합하여 전문가 수준의 매매 판단을 수행한다.
+워렌 버핏의 가치투자 철학:
+- "좋은 기업을 적정 가격에 매수하라" → PER/PBR 기반 가치 분석
+- "안전마진을 확보하라" → 52주 최저가 대비 위치, 지지선 분석
+- "확신이 있을 때 집중투자하라" → 강한 신호에 큰 포지션
+- "시장이 공포에 빠질 때 탐욕스러워라" → 시장 하락 시 저PER 저PBR 매수
+- "잔챙이 수익에 팔지 마라" → 최소 수익 임계값, 장기 보유 지향
 
-분석 가중치:
-- 고급 기술적 분석 (추세/모멘텀/변동성/거래량): 35%
-- 캔들스틱 패턴: 15%
-- 뉴스 감성 분석: 20%
+분석 가중치 (6대 분석):
+- 고급 기술적 분석 (추세/모멘텀/변동성/거래량): 30%
+- 가치 분석 (PER/PBR/52주 위치): 20%  ← NEW: 버핏 가치투자
+- 캔들스틱 패턴: 10%
+- 뉴스 감성 분석: 10%
 - 시장 컨텍스트 (레짐/시간대): 15%
 - 지지/저항 & 가격 위치: 15%
 """
@@ -37,10 +42,17 @@ class ExpertAnalysis:
 
     # 개별 점수 (-1 ~ +1)
     technical_score: float = 0
+    value_score: float = 0       # 버핏 가치투자 점수
     pattern_score: float = 0
     sentiment_score: float = 0
     market_score: float = 0
     price_level_score: float = 0
+
+    # 펀더멘탈 데이터
+    per: float = 0
+    pbr: float = 0
+    w52_high: int = 0
+    w52_low: int = 0
 
     # 종합 점수
     total_score: float = 0
@@ -58,10 +70,11 @@ class ExpertAnalysis:
 
     def summary(self) -> str:
         lines = [
-            f"══ {self.stock_name}({self.stock_code}) 전문가 분석 ══",
+            f"══ {self.stock_name}({self.stock_code}) 전문가 분석 (버핏+기술적) ══",
             f"현재가: {self.price:,}원 | 판정: {self.decision}",
             f"종합점수: {self.total_score:+.3f} (신뢰도: {self.confidence:.0%})",
             f"  기술분석: {self.technical_score:+.3f}",
+            f"  가치분석: {self.value_score:+.3f} (PER={self.per:.1f} PBR={self.pbr:.2f})",
             f"  패턴분석: {self.pattern_score:+.3f}",
             f"  뉴스감성: {self.sentiment_score:+.3f}",
             f"  시장환경: {self.market_score:+.3f}",
@@ -82,13 +95,14 @@ class ExpertStrategy(BaseStrategy):
 
     name = "expert"
 
-    # 분석 가중치 (기술적 분석 비중 상향, 뉴스 비중 하향 - 뉴스는 지연되므로)
+    # 분석 가중치 (버핏 가치투자 + 기술적 분석 융합)
     WEIGHTS = {
-        "technical": 0.40,
-        "pattern": 0.15,
-        "sentiment": 0.10,
-        "market": 0.15,
-        "price_level": 0.20,
+        "technical": 0.30,     # 기술적 분석 (추세, MACD, RSI, 볼린저 등)
+        "value": 0.20,         # 버핏 가치 분석 (PER, PBR, 52주 위치)
+        "pattern": 0.10,       # 캔들스틱 패턴
+        "sentiment": 0.10,     # 뉴스 감성
+        "market": 0.15,        # 시장 환경 (KOSPI/KOSDAQ 레짐)
+        "price_level": 0.15,   # 지지/저항 가격 위치
     }
 
     # 기본 매매 임계값 (종목별 동적으로 조정됨)
@@ -127,7 +141,7 @@ class ExpertStrategy(BaseStrategy):
 
         # 1. 가중치 조정
         weight_changed = False
-        for key in ("technical", "pattern", "sentiment", "market", "price_level"):
+        for key in ("technical", "value", "pattern", "sentiment", "market", "price_level"):
             adj = adjustments.get(key, 0)
             if adj and isinstance(adj, (int, float)):
                 old = self.WEIGHTS[key]
@@ -322,12 +336,19 @@ class ExpertStrategy(BaseStrategy):
         result.technical = tech_snap
         result.technical_score = self._calc_technical_composite(tech_snap)
 
-        # ── 2. 캔들스틱 패턴 ──
+        # ── 2. 버핏 가치 분석 (PER/PBR/52주 위치) ──
+        result.per = current_price.get("per", 0)
+        result.pbr = current_price.get("pbr", 0)
+        result.w52_high = current_price.get("w52_high", 0)
+        result.w52_low = current_price.get("w52_low", 0)
+        result.value_score = self._analyze_value(result)
+
+        # ── 3. 캔들스틱 패턴 ──
         patterns = self.pattern_recognizer.recognize_all(sorted_candles)
         result.patterns = patterns
         result.pattern_score = self.pattern_recognizer.get_signal_score(patterns)
 
-        # ── 3. 뉴스 감성 분석 ──
+        # ── 4. 뉴스 감성 분석 ──
         try:
             sentiment = self.news_analyzer.analyze(stock_code, stock_name)
             result.sentiment = sentiment
@@ -336,14 +357,14 @@ class ExpertStrategy(BaseStrategy):
             logger.warning("[%s] 뉴스 분석 실패: %s", stock_code, e)
             result.sentiment_score = 0
 
-        # ── 4. 시장 컨텍스트 ──
+        # ── 5. 시장 컨텍스트 ──
         if self._market_ctx:
             result.market_ctx = self._market_ctx
             result.market_score = self._market_ctx.market_score
         else:
             result.market_score = 0
 
-        # ── 5. 가격 위치 분석 ──
+        # ── 6. 가격 위치 분석 ──
         result.price_level_score = self._analyze_price_level(tech_snap, result.price)
 
         # ── 종합 점수 계산 ──
@@ -466,11 +487,106 @@ class ExpertStrategy(BaseStrategy):
 
         return max(-1.0, min(1.0, score))
 
+    def _analyze_value(self, result: ExpertAnalysis) -> float:
+        """워렌 버핏 가치투자 분석 점수 (-1 ~ +1).
+
+        버핏의 핵심 원칙:
+        1. PER (주가수익비율): 낮을수록 저평가 → 매수 유리
+        2. PBR (주가순자산비율): 낮을수록 자산 대비 저평가
+        3. 52주 가격 위치: 저점 근처 → 안전마진 확보
+        4. 시장 공포 시 매수: 하락장에서 저PER 종목 적극 매수
+
+        "좋은 기업을 적정 가격에 사라" — 워렌 버핏
+        """
+        score = 0.0
+        reasons = []
+
+        # ── 1. PER 분석 (수익성 대비 가격) ──
+        per = result.per
+        if per > 0:
+            if per < 8:
+                score += 0.40    # 극저PER → 강한 저평가 (버핏이 좋아하는 영역)
+                reasons.append(f"극저PER({per:.1f}) — 강한 저평가")
+            elif per < 12:
+                score += 0.25    # 저PER → 적정~저평가
+                reasons.append(f"저PER({per:.1f}) — 매력적 가격")
+            elif per < 20:
+                score += 0.05    # 적정 PER
+            elif per < 30:
+                score -= 0.10    # 고PER → 다소 고평가
+            elif per < 50:
+                score -= 0.25    # 고PER → 고평가
+                reasons.append(f"고PER({per:.1f}) — 고평가 경고")
+            else:
+                score -= 0.40    # 극고PER → 버블 의심
+                reasons.append(f"극고PER({per:.1f}) — 버블 위험")
+        elif per < 0:
+            score -= 0.30        # 적자 기업 → 버핏은 절대 투자하지 않음
+            reasons.append("적자기업(PER<0) — 버핏 투자 부적격")
+
+        # ── 2. PBR 분석 (순자산 대비 가격) ──
+        pbr = result.pbr
+        if pbr > 0:
+            if pbr < 0.7:
+                score += 0.30    # 자산가치 이하 → 큰 안전마진
+                reasons.append(f"극저PBR({pbr:.2f}) — 자산가치 이하")
+            elif pbr < 1.0:
+                score += 0.20    # 순자산 가격 이하 → 좋은 안전마진
+                reasons.append(f"저PBR({pbr:.2f}) — 안전마진 확보")
+            elif pbr < 1.5:
+                score += 0.10    # 적정 PBR
+            elif pbr < 3.0:
+                score -= 0.05    # 다소 높음
+            elif pbr < 5.0:
+                score -= 0.15    # 높음
+            else:
+                score -= 0.25    # 매우 높음
+                reasons.append(f"고PBR({pbr:.2f}) — 고평가")
+
+        # ── 3. 52주 가격 위치 (안전마진 분석) ──
+        price = result.price
+        w52_high = result.w52_high
+        w52_low = result.w52_low
+
+        if w52_high > 0 and w52_low > 0 and price > 0:
+            # 52주 범위 내 위치 (0=최저, 1=최고)
+            price_range = w52_high - w52_low
+            if price_range > 0:
+                position = (price - w52_low) / price_range
+
+                if position < 0.2:
+                    score += 0.25    # 52주 바닥 근처 → 큰 안전마진
+                    reasons.append(f"52주 바닥권({position:.0%}) — 안전마진 최대")
+                elif position < 0.35:
+                    score += 0.15    # 하단부 → 좋은 진입 구간
+                    reasons.append(f"52주 하단부({position:.0%})")
+                elif position < 0.5:
+                    score += 0.05    # 중하단
+                elif position > 0.9:
+                    score -= 0.20    # 고점 근처 → 안전마진 없음
+                    reasons.append(f"52주 고점권({position:.0%}) — 안전마진 부족")
+                elif position > 0.75:
+                    score -= 0.10    # 상단부
+
+        # ── 4. 시장 공포 시 보너스 (버핏: "다른 사람이 두려워할 때 탐욕스러워라") ──
+        if result.market_ctx and result.market_ctx.regime in ("trending_down", "volatile"):
+            # 하락장/변동성 높은 장에서 저PER 종목 = 버핏이 좋아하는 상황
+            if per > 0 and per < 15 and pbr > 0 and pbr < 2.0:
+                score += 0.15
+                reasons.append("공포 매수 기회! (하락장 + 저평가)")
+
+        # 분석 근거를 result에 추가
+        if reasons:
+            result.reasons.extend(reasons)
+
+        return max(-1.0, min(1.0, score))
+
     def _weighted_score(self, result: ExpertAnalysis) -> float:
-        """가중 종합 점수."""
+        """가중 종합 점수 (버핏 가치투자 + 기술적 분석 융합)."""
         w = self.WEIGHTS
         score = (
             result.technical_score * w["technical"]
+            + result.value_score * w.get("value", 0.20)
             + result.pattern_score * w["pattern"]
             + result.sentiment_score * w["sentiment"]
             + result.market_score * w["market"]
@@ -484,6 +600,8 @@ class ExpertStrategy(BaseStrategy):
         active_scores = []
         if result.technical and result.technical.sma_20 > 0:
             active_scores.append(result.technical_score)
+        if result.per != 0 or result.pbr != 0:
+            active_scores.append(result.value_score)
         if result.patterns:
             active_scores.append(result.pattern_score)
         if result.sentiment and result.sentiment.news_count > 0:
@@ -533,6 +651,10 @@ class ExpertStrategy(BaseStrategy):
            abs(result.technical_score) > 0.1 and abs(result.price_level_score) > 0.1:
             confidence += 0.10
 
+        # 버핏 보너스: 가치+기술 모두 매수 방향이면 확신 상승
+        if result.value_score > 0.15 and result.technical_score > 0.1:
+            confidence += 0.08  # 저평가 + 기술적 상승 = 최고의 매수 기회
+
         return min(1.0, confidence)
 
     def _make_decision(self, result: ExpertAnalysis) -> str:
@@ -564,6 +686,14 @@ class ExpertStrategy(BaseStrategy):
                 buy_adj = -0.03
             if not result.market_ctx.trading_ok:
                 return "HOLD"
+
+        # 버핏 원칙: 적자 기업은 절대 매수하지 않는다
+        if result.per < 0 and score > 0:
+            return "HOLD"
+
+        # 버핏 원칙: 극고PER(50+) 기업은 매수 매우 신중
+        if result.per > 50 and score > 0:
+            buy_adj += 0.10
 
         # 거래량 미달 시 매수 보류
         if result.technical and result.technical.volume_ratio < 0.8:
@@ -628,6 +758,18 @@ class ExpertStrategy(BaseStrategy):
                 if abs(diff) > 1.5:
                     reasons.append(f"VWAP 대비 {diff:+.1f}%")
 
+        # 가치 분석 근거 (버핏)
+        if result.per > 0:
+            if result.per < 10:
+                reasons.append(f"버핏가치: 저PER({result.per:.1f}) 매력적 가격")
+            elif result.per > 40:
+                reasons.append(f"버핏경고: 고PER({result.per:.1f}) 고평가 주의")
+        if result.pbr > 0:
+            if result.pbr < 1.0:
+                reasons.append(f"버핏가치: 저PBR({result.pbr:.2f}) 안전마진 확보")
+            elif result.pbr > 5.0:
+                reasons.append(f"버핏경고: 고PBR({result.pbr:.2f})")
+
         # 패턴 근거
         if result.patterns:
             for p in result.patterns[:3]:
@@ -687,11 +829,15 @@ class ExpertStrategy(BaseStrategy):
                     atr_mult = 3.0
                 targets.append(int(price + t.atr * atr_mult))
 
-            # 4. 신뢰도/강도 기반 최소 목표
+            # 4. 신뢰도/강도 기반 최소 목표 (버핏: 큰 수익 목표)
             if analysis.decision == "STRONG_BUY":
-                targets.append(int(price * 1.08))  # 최소 8%
+                targets.append(int(price * 1.10))  # 최소 10% (상향)
             else:
-                targets.append(int(price * 1.05))  # 최소 5%
+                targets.append(int(price * 1.07))  # 최소 7% (상향)
+
+            # 5. 버핏 가치투자 보너스: 저평가 종목은 더 높은 목표
+            if analysis.value_score > 0.3:
+                targets.append(int(price * 1.15))  # 강한 저평가 → 15% 목표
 
             # 최종: 중간값 선택 (최소/최대 제외)
             if len(targets) >= 3:

@@ -85,13 +85,19 @@ class AutoTrader:
         self._init_evolution()
 
         logger.info("=" * 70)
-        logger.info("  OSHMS 자동 매매 시스템 v2.6 가동")
+        logger.info("  OSHMS 자동 매매 시스템 v3.1 가동")
+        logger.info("  (워렌 버핏 가치투자 + 고급 기술분석 융합 전략)")
         logger.info("=" * 70)
-        logger.info("전략: %s%s", self.strategy.name, " (전문가 모드)" if is_expert else "")
+        mode_str = "모의투자" if self.settings.is_mock else "실전투자"
+        logger.info("모드: %s | API: %s", mode_str, self.settings.base_url[:35])
+        logger.info("전략: %s%s", self.strategy.name, " (전문가+가치투자)" if is_expert else "")
         logger.info("매매 시간: %s ~ %s", self.settings.trading_start_time, self.settings.trading_end_time)
         logger.info("최대 매수금액: %s원", f"{self.settings.max_buy_amount:,}")
         logger.info("최대 보유종목: %d개", self.settings.max_hold_count)
-        logger.info("손절: %.1f%% / 익절: %.1f%%", self.settings.stop_loss_pct, self.settings.take_profit_pct)
+        logger.info("손절: %.1f%% / 최소매도수익: %.1f%%(또는 %s원)",
+                     self.settings.stop_loss_pct,
+                     self.order_manager.MIN_SELL_PROFIT_PCT,
+                     f"{self.order_manager.MIN_SELL_PROFIT_KRW:,}")
         logger.info("감시 주기: %d초 | 종목풀: 전체 시장 스캔", interval)
         if self._evolution:
             logger.info("진화 엔진: 활성 (세대 #%d)", self._evolution.state.generation)
@@ -440,13 +446,41 @@ class AutoTrader:
             return self._stock_cache or []
 
     def _is_valid_stock(self, stock: dict) -> bool:
-        """매매 적합 종목인지 검증한다."""
+        """매매 적합 종목인지 검증한다 (버핏 가치 필터 포함)."""
         price = stock.get("price", 0)
         change_rate = stock.get("change_rate", 0)
         return (
             2000 < price < 500000
             and -5 < change_rate < 8  # 급등/급락 제외 (보수적)
         )
+
+    def _score_stock_value(self, stock_data: dict) -> float:
+        """종목의 가치투자 점수를 계산한다 (버핏 원칙).
+
+        Returns:
+            가치 점수 (-1.0 ~ +1.0). 높을수록 매수 매력적.
+        """
+        per = stock_data.get("per", 0)
+        pbr = stock_data.get("pbr", 0)
+        score = 0.0
+
+        if 0 < per < 10:
+            score += 0.3
+        elif 0 < per < 15:
+            score += 0.15
+        elif per > 40:
+            score -= 0.2
+        elif per < 0:
+            score -= 0.4  # 적자 기업 패널티
+
+        if 0 < pbr < 1.0:
+            score += 0.2
+        elif 0 < pbr < 1.5:
+            score += 0.1
+        elif pbr > 5.0:
+            score -= 0.15
+
+        return max(-1.0, min(1.0, score))
 
     # ──────────────────────────────────────────────
     # 매매 사이클
@@ -623,17 +657,23 @@ class AutoTrader:
                         upside["upside_pct"],
                     )
 
-                # 추세 소진 + 수익 확보 → 매도
-                if not upside["should_hold"] and pos.profit_rate > 2.0:
+                # 추세 소진 + 수익 확보 → 매도 (최소 수익 임계값 확인)
+                sell_worthy, worthy_reason = self.order_manager.is_sell_worthy(code)
+                if not upside["should_hold"] and pos.profit_rate > 2.0 and sell_worthy:
                     logger.info(
-                        "📉 [%s] 추세 소진 → 수익 확정: %.1f%% | %s",
-                        pos.stock_name, pos.profit_rate, upside["reason"],
+                        "📉 [%s] 추세 소진 → 수익 확정: %.1f%% (%+,d원) | %s",
+                        pos.stock_name, pos.profit_rate, pos.profit_loss, upside["reason"],
                     )
                     pr = pos.profit_rate
                     self.order_manager.execute_sell(
                         code, f"추세소진(수익={pr:.1f}%) | {upside['reason']}"
                     )
                     self._on_trade_completed(code, pr, "SELL")
+                elif not upside["should_hold"] and pos.profit_rate > 0 and not sell_worthy:
+                    logger.info(
+                        "  [%s] 추세 소진이나 수익 부족: %.2f%% (%+,d원) — %s",
+                        pos.stock_name, pos.profit_rate, pos.profit_loss, worthy_reason,
+                    )
                 elif self._cycle_count % 10 == 0:
                     logger.info(
                         "  [%s] 보유유지: 수익=%.1f%% 여력=%.1f%% 모멘텀=%.2f 목표=%s원",
@@ -859,6 +899,8 @@ class AutoTrader:
                     stock_code, stock_name, current_price["price"], signal.reason,
                     strength=signal.strength, atr=atr_value,
                     target_price=target_price, estimated_upside=estimated_upside,
+                    per=current_price.get("per", 0),
+                    pbr=current_price.get("pbr", 0),
                 )
             else:
                 logger.debug(
@@ -881,6 +923,15 @@ class AutoTrader:
                 # 손실 중이면 회복 대기 (손절은 _check_risk_management에서 처리)
                 if pos.profit_rate <= 0:
                     logger.info("  → 손실 중(%.2f%%) — 회복 대기 (손절만 작동)", pos.profit_rate)
+                    return
+
+                # ── 최소 수익 검증 (5-10원 매도 방지) ──
+                sell_worthy, worthy_reason = self.order_manager.is_sell_worthy(stock_code)
+                if not sell_worthy and pos.profit_rate > 0:
+                    logger.info(
+                        "  → 매도 보류: %s (%s %+.2f%% %+,d원) — 수익 충분히 키우기",
+                        worthy_reason, pos.stock_name, pos.profit_rate, pos.profit_loss,
+                    )
                     return
 
                 # ── 상승여력 재분석 ──
@@ -910,15 +961,21 @@ class AutoTrader:
                             upside["reason"],
                         )
                     else:
-                        # 추세 소진 → 매도
-                        should_sell = True
-                        sell_reason = f"추세소진(여력={upside['upside_pct']:.1f}%) | {upside['reason']}"
-                        logger.info(
-                            "  → 추세 소진: 상승여력=%.1f%% 모멘텀=%.2f → 매도 실행",
-                            upside["upside_pct"], upside["momentum_score"],
-                        )
+                        # 추세 소진 → 매도 (단, 최소 수익 이상일 때만)
+                        if pos.profit_rate >= self.order_manager.MIN_SELL_PROFIT_PCT:
+                            should_sell = True
+                            sell_reason = f"추세소진(수익={pos.profit_rate:.1f}%, 여력={upside['upside_pct']:.1f}%) | {upside['reason']}"
+                            logger.info(
+                                "  → 추세 소진 + 수익 충분: %.1f%% (%+,d원) → 매도 실행",
+                                pos.profit_rate, pos.profit_loss,
+                            )
+                        else:
+                            logger.info(
+                                "  → 추세 소진이나 수익 부족: %.2f%% (%+,d원) — 홀딩 유지",
+                                pos.profit_rate, pos.profit_loss,
+                            )
                 else:
-                    # Expert가 아닌 전략: 기존 방식 (수익 2% 이상 + 매도 신호)
+                    # Expert가 아닌 전략: 수익 2% 이상 + 매도 신호
                     if pos.profit_rate > 2.0 and signal.strength >= 0.15:
                         should_sell = True
 

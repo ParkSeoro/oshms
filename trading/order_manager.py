@@ -129,25 +129,98 @@ class OrderManager:
         """매수 가능 여부를 확인한다."""
         return len(self.positions) < self.settings.max_hold_count
 
-    def calc_buy_quantity(self, price: int, strength: float = 1.0) -> int:
-        """매수 수량을 계산한다.
+    def is_sell_worthy(self, stock_code: str) -> tuple[bool, str]:
+        """매도할 만한 수익이 나는지 확인한다 (최소 수익 임계값).
 
-        신호 강도에 따라 투자 금액을 조절한다.
-        - 강한 신호 (>0.7): 최대 금액의 100%
+        워렌 버핏 원칙: "잔챙이 수익에 팔지 마라. 큰 물고기를 기다려라."
+
+        Returns:
+            (매도 가능 여부, 사유)
+        """
+        pos = self.positions.get(stock_code)
+        if not pos:
+            return False, "포지션 없음"
+
+        profit_pct = pos.profit_rate
+        profit_krw = pos.profit_loss
+
+        # 손절은 무조건 허용 (리스크 관리)
+        if profit_pct <= -3.0:
+            return True, "손절 대상"
+
+        # 최소 보유 시간 확인 (30분)
+        try:
+            buy_time = datetime.strptime(pos.buy_time, "%H:%M:%S")
+            now_time = datetime.now().replace(
+                hour=buy_time.hour, minute=buy_time.minute, second=buy_time.second)
+            elapsed = (datetime.now() - now_time).total_seconds()
+            if 0 < elapsed < self.MIN_HOLD_SECONDS and profit_pct < 5.0:
+                return False, f"최소 보유시간 미달 ({elapsed:.0f}초/{self.MIN_HOLD_SECONDS}초)"
+        except (ValueError, TypeError):
+            pass
+
+        # 수익 중일 때: 최소 수익 임계값 확인
+        if profit_pct > 0:
+            if profit_pct < self.MIN_SELL_PROFIT_PCT:
+                return False, f"수익률 부족 ({profit_pct:.2f}% < {self.MIN_SELL_PROFIT_PCT}%)"
+            if profit_krw < self.MIN_SELL_PROFIT_KRW:
+                return False, f"수익금 부족 ({profit_krw:,}원 < {self.MIN_SELL_PROFIT_KRW:,}원)"
+
+        return True, "매도 가능"
+
+    # 매도 시 최소 수익 기준 (워렌 버핏: 너무 작은 수익에 매도하지 않는다)
+    MIN_SELL_PROFIT_PCT = 2.0    # 최소 2% 이상 수익일 때만 매도
+    MIN_SELL_PROFIT_KRW = 3000   # 최소 3,000원 이상 수익일 때만 매도
+    MIN_HOLD_SECONDS = 1800      # 최소 30분 보유 후 매도 (급등/급락 제외)
+
+    def calc_buy_quantity(self, price: int, strength: float = 1.0,
+                          per: float = 0, pbr: float = 0) -> int:
+        """매수 수량을 계산한다 (버핏식 집중투자).
+
+        신호 강도 + 가치 평가에 따라 투자 금액을 조절한다.
+        - 강한 신호 + 저평가(PER<12, PBR<1.5): 최대 금액의 100%
+        - 강한 신호 (>0.7): 최대 금액의 90%
         - 보통 신호 (0.4~0.7): 최대 금액의 70%
-        - 약한 신호 (<0.4): 최대 금액의 50%
+        - 약한 신호 (<0.4): 최대 금액의 55%
+
+        워렌 버핏 원칙: "확신이 있을 때 크게 베팅하라."
         """
         if price <= 0:
             return 0
-        # 신호 강도에 따른 투자 비율 (50% ~ 100%)
-        invest_ratio = min(1.0, max(0.5, 0.3 + strength))
+
+        # 1. 기본 투자 비율 (신호 강도 기반: 55% ~ 95%)
+        base_ratio = min(0.95, max(0.55, 0.3 + strength * 0.65))
+
+        # 2. 가치 투자 보너스 (PER/PBR 저평가 시 비율 상향)
+        value_bonus = 0.0
+        if 0 < per < 12:
+            value_bonus += 0.03  # 저PER 보너스
+        if 0 < pbr < 1.5:
+            value_bonus += 0.02  # 저PBR 보너스
+
+        invest_ratio = min(1.0, base_ratio + value_bonus)
         effective_amount = int(self.settings.max_buy_amount * invest_ratio)
-        return effective_amount // price
+        quantity = effective_amount // price
+
+        # 3. 최소 수량 보장: 수익이 의미 있으려면 최소 금액 이상 투자
+        #    수익률 3%일 때 최소 3,000원 이상 수익이 나도록 → 최소 100,000원 투자
+        min_invest = 100_000
+        if quantity * price < min_invest and price > 0:
+            min_qty = min_invest // price
+            if min_qty > 0 and min_qty * price <= self.settings.max_buy_amount:
+                quantity = min_qty
+                logger.info(
+                    "최소 투자금액 보장: %d주 → %d주 (%s원)",
+                    effective_amount // price, quantity, f"{quantity * price:,}",
+                )
+
+        return quantity
 
     def execute_buy(
         self, stock_code: str, stock_name: str, price: int, reason: str,
         strength: float = 0.5, atr: float = 0.0,
         target_price: int = 0, estimated_upside: float = 0.0,
+        per: float = 0, pbr: float = 0,
     ) -> bool:
         """매수를 실행한다."""
         if not self.can_buy():
@@ -158,7 +231,7 @@ class OrderManager:
             logger.warning("[%s] 이미 보유 중인 종목", stock_code)
             return False
 
-        quantity = self.calc_buy_quantity(price, strength)
+        quantity = self.calc_buy_quantity(price, strength, per=per, pbr=pbr)
         if quantity <= 0:
             logger.warning("[%s] 매수 수량 0: 가격=%d, 최대금액=%d", stock_code, price, self.settings.max_buy_amount)
             return False

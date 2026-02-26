@@ -59,8 +59,15 @@ class TestOrderManager(unittest.TestCase):
         self.assertFalse(self.manager.can_buy())
 
     def test_calc_buy_quantity(self):
+        # strength=1.0 → ratio=min(1.0, max(0.55, 0.3+0.65))=0.95
+        # effective=500000*0.95=475000, 475000//50000=9
         qty = self.manager.calc_buy_quantity(50000)
-        self.assertEqual(qty, 10)  # 500000 / 50000
+        self.assertEqual(qty, 9)
+
+    def test_calc_buy_quantity_max_strength(self):
+        # 저PER+저PBR 보너스 → ratio=0.95+0.05=1.0 → 500000//50000=10
+        qty = self.manager.calc_buy_quantity(50000, strength=1.0, per=8, pbr=1.2)
+        self.assertEqual(qty, 10)
 
     def test_calc_buy_quantity_zero_price(self):
         qty = self.manager.calc_buy_quantity(0)
@@ -83,12 +90,22 @@ class TestOrderManager(unittest.TestCase):
         self.assertEqual(len(targets), 0)
 
     def test_check_take_profit(self):
+        # v2.7에서 익절 기준이 20%로 상향됨 (목표가 매도가 주 메커니즘)
+        self.manager.positions["005930"] = Position(
+            "005930", "삼성전자", 10, 70000, "09:30", "테스트",
+            current_price=85000  # +21.4% → 20% 이상이므로 익절 대상
+        )
+        targets = self.manager.check_take_profit()
+        self.assertIn("005930", targets)
+
+    def test_check_take_profit_below_threshold(self):
+        # 3.57% 수익은 익절 대상이 아님 (20% 미만)
         self.manager.positions["005930"] = Position(
             "005930", "삼성전자", 10, 70000, "09:30", "테스트",
             current_price=72500  # +3.57%
         )
         targets = self.manager.check_take_profit()
-        self.assertIn("005930", targets)
+        self.assertNotIn("005930", targets)
 
     def test_check_trailing_stop(self):
         self.manager.positions["005930"] = Position(

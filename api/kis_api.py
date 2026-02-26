@@ -131,6 +131,7 @@ class KISApi:
         output = data.get("output", {})
         return {
             "stock_code": stock_code,
+            "stock_name": output.get("hts_kor_isnm", ""),
             "price": int(output.get("stck_prpr", 0)),
             "open": int(output.get("stck_oprc", 0)),
             "high": int(output.get("stck_hgpr", 0)),
@@ -140,6 +141,11 @@ class KISApi:
             "trade_amount": int(output.get("acml_tr_pbmn", 0)),
             "per": float(output.get("per", 0)),
             "pbr": float(output.get("pbr", 0)),
+            "eps": float(output.get("eps", 0)),
+            "bps": float(output.get("bps", 0)),
+            "w52_high": int(output.get("stck_dryy_hgpr", 0)),
+            "w52_low": int(output.get("stck_dryy_lwpr", 0)),
+            "market_cap": int(output.get("hts_avls", 0)),
         }
 
     def get_minute_chart(self, stock_code: str, period: str = "1") -> list[dict]:
