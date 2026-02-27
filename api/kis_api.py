@@ -479,11 +479,24 @@ class KISApi:
         Returns:
             dict with 'holdings' (list) and 'summary' (dict)
         """
+        # 계좌번호 사전 검증
+        acnt = self.settings.account_number
+        suffix = self.settings.account_suffix
+        if not acnt or len(acnt) != 8 or not suffix or len(suffix) != 2:
+            mode = "모의투자" if self.settings.is_mock else "실전투자"
+            raise ValueError(
+                f"계좌번호 형식 오류\n\n"
+                f"현재 계좌: '{self.settings.account_no}'\n"
+                f"올바른 형식: 12345678-01 (8자리-2자리)\n"
+                f"현재 모드: {mode}\n\n"
+                f"설정에서 계좌번호를 확인해주세요."
+            )
+
         tr_id = "VTTC8434R" if self.settings.is_mock else "TTTC8434R"
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
         params = {
-            "CANO": self.settings.account_number,
-            "ACNT_PRDT_CD": self.settings.account_suffix,
+            "CANO": acnt,
+            "ACNT_PRDT_CD": suffix,
             "AFHR_FLPR_YN": "N",
             "OFL_YN": "",
             "INQR_DVSN": "02",
@@ -496,7 +509,30 @@ class KISApi:
         }
 
         resp = self.session.get(url, headers=self._headers(tr_id), params=params, timeout=10)
-        resp.raise_for_status()
+
+        # 500 에러 시 토큰 재발급 후 1회 재시도
+        if resp.status_code == 500:
+            mode = "모의투자" if self.settings.is_mock else "실전투자"
+            logger.warning("잔고 조회 500 에러 — 토큰 재발급 후 재시도 (모드: %s)", mode)
+            self._access_token = ""
+            self._token_expires_at = datetime.min
+            try:
+                resp = self.session.get(url, headers=self._headers(tr_id), params=params, timeout=10)
+            except Exception:
+                pass
+
+        if resp.status_code != 200:
+            mode = "모의투자" if self.settings.is_mock else "실전투자"
+            raise ConnectionError(
+                f"잔고 조회 실패 (HTTP {resp.status_code})\n\n"
+                f"현재 모드: {mode}\n"
+                f"계좌: {acnt}-{suffix}\n\n"
+                f"확인 사항:\n"
+                f"1. API KEY가 현재 모드({mode})용인지 확인\n"
+                f"2. 계좌번호가 올바른지 확인\n"
+                f"3. 한국투자증권 모의투자 서비스 이용 신청 확인"
+            )
+
         data = resp.json()
 
         if data.get("rt_cd") != "0":
