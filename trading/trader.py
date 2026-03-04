@@ -59,7 +59,7 @@ class AutoTrader:
         # 종목 선정 캐시 (5분마다 갱신)
         self._stock_cache: list[str] = []
         self._stock_cache_time: float = 0
-        self._STOCK_CACHE_TTL = 300  # 5분
+        self._STOCK_CACHE_TTL = 180  # 3분 (더 빈번한 종목 갱신)
 
         # 레짐 전략 조정값 (v2.9)
         self._regime_adj: dict = {}
@@ -380,8 +380,10 @@ class AutoTrader:
     def _select_stocks_wide(self) -> list[str]:
         """전체 시장을 스캔하여 매매 후보를 선정한다.
 
-        거래량 + 거래대금 + 상승률 상위 종목을 합산하여
+        거래량 + 거래대금 + 상승률 + 하락 반등 후보를 합산하여
         중복 제거 후 최종 후보를 선정한다.
+
+        v3.0: 스캔 범위 대폭 확대 (20개 → 50개)
         """
         now = time.time()
         if self._stock_cache and (now - self._stock_cache_time) < self._STOCK_CACHE_TTL:
@@ -391,22 +393,22 @@ class AutoTrader:
             seen = set()
             candidates = []  # (code, score)
 
-            # 1. 거래량 상위 30개
+            # 1. 거래량 상위 50개
             try:
-                vol_rank = self.api.get_volume_rank(count=30)
+                vol_rank = self.api.get_volume_rank(count=50)
                 for i, s in enumerate(vol_rank):
                     code = s["stock_code"]
                     if code not in seen and self._is_valid_stock(s):
                         seen.add(code)
-                        candidates.append((code, 30 - i))  # 상위일수록 높은 점수
+                        candidates.append((code, 50 - i))  # 상위일수록 높은 점수
             except Exception as e:
                 logger.warning("거래량 순위 조회 실패: %s", e)
 
             time.sleep(0.3)
 
-            # 2. 거래대금 상위 30개
+            # 2. 거래대금 상위 50개
             try:
-                amount_rank = self.api.get_market_cap_rank(count=30)
+                amount_rank = self.api.get_market_cap_rank(count=50)
                 for i, s in enumerate(amount_rank):
                     code = s["stock_code"]
                     if self._is_valid_stock(s):
@@ -414,44 +416,61 @@ class AutoTrader:
                             # 이미 있으면 점수 추가 (중복 = 더 인기)
                             for j, (c, sc) in enumerate(candidates):
                                 if c == code:
-                                    candidates[j] = (c, sc + 20 - i)
+                                    candidates[j] = (c, sc + 30 - i)
                                     break
                         else:
                             seen.add(code)
-                            candidates.append((code, 20 - i))
+                            candidates.append((code, 30 - i))
             except Exception as e:
                 logger.warning("거래대금 순위 조회 실패: %s", e)
 
             time.sleep(0.3)
 
-            # 3. 상승 종목 20개 (모멘텀)
+            # 3. 상승 종목 30개 (모멘텀)
             try:
-                up_rank = self.api.get_fluctuation_rank(direction="up", count=20)
+                up_rank = self.api.get_fluctuation_rank(direction="up", count=30)
                 for i, s in enumerate(up_rank):
                     code = s["stock_code"]
                     cr = s.get("change_rate", 0)
-                    if self._is_valid_stock(s) and 0.5 < cr < 8:  # 소폭~중폭 상승만
+                    if self._is_valid_stock(s) and 0.3 < cr < 10:  # 소폭~중폭 상승
                         if code in seen:
                             for j, (c, sc) in enumerate(candidates):
                                 if c == code:
-                                    candidates[j] = (c, sc + 15)
+                                    candidates[j] = (c, sc + 20)
                                     break
                         else:
                             seen.add(code)
-                            candidates.append((code, 15 - i))
+                            candidates.append((code, 20 - i))
             except Exception as e:
                 logger.warning("상승률 순위 조회 실패: %s", e)
 
-            # 점수 기준 정렬 → 상위 20개 선정
+            time.sleep(0.3)
+
+            # 4. 하락 반등 후보 20개 (과매도 저가 매수 기회)
+            try:
+                down_rank = self.api.get_fluctuation_rank(direction="down", count=20)
+                for i, s in enumerate(down_rank):
+                    code = s["stock_code"]
+                    cr = s.get("change_rate", 0)
+                    price = s.get("price", 0)
+                    # 적당한 하락폭(-1%~-5%) + 가격대 필터
+                    if -5 < cr < -1 and 3000 < price < 300000:
+                        if code not in seen:
+                            seen.add(code)
+                            candidates.append((code, 10))  # 기본 점수
+            except Exception as e:
+                logger.warning("하락률 순위 조회 실패: %s", e)
+
+            # 점수 기준 정렬 → 상위 50개 선정
             candidates.sort(key=lambda x: x[1], reverse=True)
-            result = [code for code, _ in candidates[:20]]
+            result = [code for code, _ in candidates[:50]]
 
             if result:
                 self._stock_cache = result
                 self._stock_cache_time = now
                 logger.info(
-                    "종목 선정: %d개 후보 (거래량+거래대금+모멘텀 합산)",
-                    len(result),
+                    "종목 선정: %d개 후보 (거래량+거래대금+모멘텀+하락반등 합산, 총 스캔 %d개)",
+                    len(result), len(seen),
                 )
             return result
 
@@ -460,12 +479,12 @@ class AutoTrader:
             return self._stock_cache or []
 
     def _is_valid_stock(self, stock: dict) -> bool:
-        """매매 적합 종목인지 검증한다 (버핏 가치 필터 포함)."""
+        """매매 적합 종목인지 검증한다."""
         price = stock.get("price", 0)
         change_rate = stock.get("change_rate", 0)
         return (
-            2000 < price < 500000
-            and -5 < change_rate < 8  # 급등/급락 제외 (보수적)
+            1000 < price < 1000000
+            and -8 < change_rate < 15  # 범위 확대 (더 많은 기회 포착)
         )
 
     def _score_stock_value(self, stock_data: dict) -> float:

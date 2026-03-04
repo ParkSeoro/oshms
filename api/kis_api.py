@@ -229,7 +229,7 @@ class KISApi:
             })
         return candles
 
-    def get_volume_rank(self, count: int = 20) -> list[dict]:
+    def get_volume_rank(self, count: int = 50) -> list[dict]:
         """거래량 상위 종목을 조회한다."""
         tr_id = "FHPST01710000"
         url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/volume-rank"
