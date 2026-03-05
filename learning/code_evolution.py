@@ -148,9 +148,12 @@ class CodeEvolutionEngine:
         cycle = self.state.cycle
         logger.info("═══ 코드 진화 사이클 #%d 시작 ═══", cycle)
 
-        # 1단계: 성능 진단
+        # 1단계: 성능 진단 + 심층 매매 복기
         diagnosis = self._diagnose_performance(sells)
+        review = self._deep_review_trades(sells)
+        diagnosis.weaknesses.extend(review.get("additional_weaknesses", []))
         self.state.last_diagnosis = asdict(diagnosis)
+        self.state.last_diagnosis["trade_review"] = review
 
         # 성능 스냅샷 저장
         self.state.performance_history.append({
@@ -228,7 +231,7 @@ class CodeEvolutionEngine:
 
     def get_evolution_summary(self) -> dict:
         """진화 엔진 현황 요약."""
-        return {
+        summary = {
             "cycle": self.state.cycle,
             "total_improvements": self.state.total_improvements,
             "total_rollbacks": self.state.total_rollbacks,
@@ -238,6 +241,20 @@ class CodeEvolutionEngine:
             "applied_modules": len(self.state.applied_modules),
             "active_config_keys": list(k for k, v in self.state.active_config.items() if v),
         }
+        # 매매 복기 리포트 포함
+        review = self.state.last_diagnosis.get("trade_review", {})
+        if review:
+            summary["trade_review"] = {
+                "report": review.get("report", ""),
+                "findings_count": len(review.get("findings", [])),
+                "auto_applied": review.get("auto_applied", 0),
+            }
+        return summary
+
+    def get_trade_review_report(self) -> str:
+        """최근 매매 복기 리포트를 반환한다 (자연어)."""
+        review = self.state.last_diagnosis.get("trade_review", {})
+        return review.get("report", "아직 복기 데이터가 없습니다.")
 
     # ──────────────────────────────────────────────
     # 1단계: 성능 진단
@@ -1357,5 +1374,527 @@ class CodeEvolutionEngine:
         }
         EVOLVED_CONFIG_FILE.write_text(
             json.dumps(config, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    # ══════════════════════════════════════════════════
+    # 자동 매매 복기 엔진 (v3.2)
+    # ══════════════════════════════════════════════════
+
+    REVIEW_FILE = Path("data/trade_reviews.json")
+
+    def _deep_review_trades(self, sells: list[dict]) -> dict:
+        """거래를 심층 복기하여 구체적 개선사항을 도출한다.
+
+        기존 _diagnose_performance()가 수치 진단이라면,
+        이 메서드는 패턴/맥락 기반 질적 분석을 수행한다.
+
+        분석 항목:
+        1. 보유시간별 성과 (단타 vs 스윙)
+        2. 매수 사유 키워드별 상세 분석
+        3. 연속 패턴 (승→패, 패→승 전환)
+        4. 가격대별 성과
+        5. 수익/손실 크기 분포 분석
+
+        Returns:
+            {findings, additional_weaknesses, report, auto_applied}
+        """
+        if len(sells) < 5:
+            return {"findings": [], "additional_weaknesses": [], "report": "거래 데이터 부족", "auto_applied": 0}
+
+        findings = []
+        additional_weaknesses = []
+        auto_rules = []
+
+        # ── 1. 보유시간별 성과 분석 ──
+        holding_analysis = self._analyze_holding_periods(sells)
+        if holding_analysis:
+            findings.append(holding_analysis)
+            if holding_analysis.get("severity") == "high":
+                additional_weaknesses.append(holding_analysis)
+
+        # ── 2. 매수 사유 키워드별 심층 분석 ──
+        reason_analysis = self._analyze_reason_patterns(sells)
+        findings.extend(reason_analysis)
+        for r in reason_analysis:
+            if r.get("severity") in ("high", "critical"):
+                additional_weaknesses.append(r)
+
+        # ── 3. 연속 패턴 분석 (승패 전환) ──
+        streak_analysis = self._analyze_streaks(sells)
+        if streak_analysis:
+            findings.append(streak_analysis)
+
+        # ── 4. 가격대별 성과 ──
+        price_analysis = self._analyze_price_ranges(sells)
+        if price_analysis:
+            findings.append(price_analysis)
+            if price_analysis.get("severity") in ("high", "critical"):
+                additional_weaknesses.append(price_analysis)
+
+        # ── 5. 수익/손실 크기 분포 ──
+        distribution = self._analyze_profit_distribution(sells)
+        if distribution:
+            findings.append(distribution)
+
+        # ── 6. 자연어 복기 리포트 생성 ──
+        report = self._generate_review_report(sells, findings)
+
+        # ── 7. 발견사항 → 자동 규칙 변환 ──
+        auto_applied = self._auto_apply_findings(findings)
+
+        # ── 8. 복기 결과 저장 ──
+        review_result = {
+            "findings": findings,
+            "additional_weaknesses": additional_weaknesses,
+            "report": report,
+            "auto_applied": auto_applied,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        self._save_review(review_result)
+
+        logger.info(
+            "매매 복기 완료: 발견사항 %d개, 약점 %d개, 자동적용 %d건",
+            len(findings), len(additional_weaknesses), auto_applied,
+        )
+        return review_result
+
+    def _analyze_holding_periods(self, sells: list[dict]) -> dict | None:
+        """보유시간별 성과를 분석한다."""
+        # BUY-SELL 쌍을 매칭하여 보유시간 추정
+        buys = {}
+        pairs = []
+
+        # trades.json에서 전체 거래 로드
+        all_trades = []
+        if TRADES_FILE.exists():
+            try:
+                all_trades = json.loads(TRADES_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        for t in all_trades:
+            code = t.get("stock_code", "")
+            if t.get("side") == "BUY":
+                buys[code] = t.get("timestamp", "")
+            elif t.get("side") == "SELL" and code in buys:
+                buy_ts = buys.pop(code)
+                pairs.append({
+                    "buy_time": buy_ts,
+                    "sell_time": t.get("timestamp", ""),
+                    "profit_rate": t.get("profit_rate", 0),
+                    "profit_loss": t.get("profit_loss", 0),
+                })
+
+        if len(pairs) < 5:
+            return None
+
+        # 보유시간 추정 (같은 날짜면 분 차이, 다른 날짜면 일 차이)
+        short_term = []  # 당일 매매
+        swing = []       # 1일 이상
+
+        for p in pairs:
+            buy_date = p["buy_time"][:10] if len(p["buy_time"]) >= 10 else ""
+            sell_date = p["sell_time"][:10] if len(p["sell_time"]) >= 10 else ""
+
+            if buy_date == sell_date:
+                short_term.append(p["profit_rate"])
+            else:
+                swing.append(p["profit_rate"])
+
+        result = {"area": "holding_period", "detail": ""}
+
+        if short_term and swing:
+            st_wr = sum(1 for r in short_term if r > 0) / len(short_term) * 100
+            sw_wr = sum(1 for r in swing if r > 0) / len(swing) * 100
+            st_avg = sum(short_term) / len(short_term)
+            sw_avg = sum(swing) / len(swing)
+
+            if st_wr > sw_wr + 15:
+                result["detail"] = (
+                    f"단타(당일) 승률 {st_wr:.0f}% > 스윙 승률 {sw_wr:.0f}% — "
+                    f"단타 평균수익 {st_avg:.2f}% vs 스윙 {sw_avg:.2f}%"
+                )
+                result["severity"] = "medium"
+                result["recommendation"] = "단기 보유 전략 강화 권장"
+            elif sw_wr > st_wr + 15:
+                result["detail"] = (
+                    f"스윙 승률 {sw_wr:.0f}% > 단타 승률 {st_wr:.0f}% — "
+                    f"스윙 평균수익 {sw_avg:.2f}% vs 단타 {st_avg:.2f}%"
+                )
+                result["severity"] = "medium"
+                result["recommendation"] = "보유 기간 확대 권장"
+            else:
+                result["detail"] = f"단타 승률 {st_wr:.0f}%, 스윙 승률 {sw_wr:.0f}% — 유의미한 차이 없음"
+                result["severity"] = "low"
+                result["recommendation"] = "현재 보유 전략 유지"
+
+            result["data"] = {
+                "short_term_wr": round(st_wr, 1), "swing_wr": round(sw_wr, 1),
+                "short_term_avg": round(st_avg, 2), "swing_avg": round(sw_avg, 2),
+                "short_term_count": len(short_term), "swing_count": len(swing),
+            }
+            return result
+
+        return None
+
+    def _analyze_reason_patterns(self, sells: list[dict]) -> list[dict]:
+        """매수 사유별 상세 성과를 분석한다."""
+        # 키워드 → 거래 결과 매핑
+        keywords = [
+            "기술분석", "가치투자", "골든크로스", "데드크로스",
+            "볼린저", "RSI", "MACD", "모멘텀", "패턴", "뉴스",
+            "상승여력", "추세소진", "트레일링", "손절", "목표가",
+            "과매도", "반등", "돌파",
+        ]
+
+        stats = defaultdict(lambda: {"profits": [], "rates": []})
+        for t in sells:
+            reason = t.get("reason", "")
+            pl = t.get("profit_loss", 0)
+            rate = t.get("profit_rate", 0)
+            for kw in keywords:
+                if kw in reason:
+                    stats[kw]["profits"].append(pl)
+                    stats[kw]["rates"].append(rate)
+
+        findings = []
+        for kw, data in stats.items():
+            if len(data["profits"]) < 3:
+                continue
+
+            total = len(data["profits"])
+            wins = sum(1 for p in data["profits"] if p > 0)
+            wr = wins / total * 100
+            avg_rate = sum(data["rates"]) / total
+            total_profit = sum(data["profits"])
+
+            severity = "low"
+            if wr < 30:
+                severity = "high"
+            elif wr < 40:
+                severity = "medium"
+
+            findings.append({
+                "area": "reason_pattern",
+                "keyword": kw,
+                "detail": (
+                    f"'{kw}' 관련 거래: {total}건 승률 {wr:.0f}% "
+                    f"평균수익률 {avg_rate:.2f}% 총손익 {total_profit:+,.0f}원"
+                ),
+                "severity": severity,
+                "data": {
+                    "keyword": kw, "total": total, "wins": wins,
+                    "win_rate": round(wr, 1), "avg_rate": round(avg_rate, 2),
+                    "total_profit": total_profit,
+                },
+            })
+
+        # 승률 순으로 정렬
+        findings.sort(key=lambda f: f["data"].get("win_rate", 50))
+        return findings
+
+    def _analyze_streaks(self, sells: list[dict]) -> dict | None:
+        """연속 승/패 패턴을 분석한다."""
+        results = [1 if t.get("profit_loss", 0) > 0 else 0 for t in sells]
+        if len(results) < 10:
+            return None
+
+        # 연속 패턴 통계
+        max_win_streak = 0
+        max_loss_streak = 0
+        current = 0
+        current_type = None
+
+        win_streaks = []
+        loss_streaks = []
+
+        for r in results:
+            if r == current_type:
+                current += 1
+            else:
+                if current_type == 1 and current > 0:
+                    win_streaks.append(current)
+                elif current_type == 0 and current > 0:
+                    loss_streaks.append(current)
+                current = 1
+                current_type = r
+
+        if current_type == 1:
+            win_streaks.append(current)
+        elif current_type == 0:
+            loss_streaks.append(current)
+
+        max_win = max(win_streaks) if win_streaks else 0
+        max_loss = max(loss_streaks) if loss_streaks else 0
+        avg_win = sum(win_streaks) / len(win_streaks) if win_streaks else 0
+        avg_loss = sum(loss_streaks) / len(loss_streaks) if loss_streaks else 0
+
+        # 3연패 후 다음 거래 패턴
+        after_3loss = []
+        streak = 0
+        for i, r in enumerate(results):
+            if r == 0:
+                streak += 1
+            else:
+                if streak >= 3 and i < len(results):
+                    after_3loss.append(r)
+                streak = 0
+
+        after_3loss_wr = (sum(after_3loss) / len(after_3loss) * 100) if after_3loss else 0
+
+        return {
+            "area": "streak_pattern",
+            "severity": "medium" if max_loss >= 4 else "low",
+            "detail": (
+                f"최대 연승 {max_win}회, 최대 연패 {max_loss}회 | "
+                f"평균 연승 {avg_win:.1f}, 평균 연패 {avg_loss:.1f} | "
+                f"3연패 후 승률 {after_3loss_wr:.0f}% ({len(after_3loss)}건)"
+            ),
+            "data": {
+                "max_win_streak": max_win, "max_loss_streak": max_loss,
+                "avg_win_streak": round(avg_win, 1), "avg_loss_streak": round(avg_loss, 1),
+                "after_3loss_wr": round(after_3loss_wr, 1), "after_3loss_count": len(after_3loss),
+            },
+        }
+
+    def _analyze_price_ranges(self, sells: list[dict]) -> dict | None:
+        """가격대별 성과를 분석한다."""
+        buckets = defaultdict(lambda: {"wins": 0, "losses": 0, "profit": 0})
+        bucket_names = {
+            "under_5k": "5천원 미만",
+            "5k_20k": "5천~2만원",
+            "20k_50k": "2만~5만원",
+            "50k_100k": "5만~10만원",
+            "over_100k": "10만원 이상",
+        }
+
+        for t in sells:
+            price = t.get("price", 0)
+            if price < 5000:
+                bucket = "under_5k"
+            elif price < 20000:
+                bucket = "5k_20k"
+            elif price < 50000:
+                bucket = "20k_50k"
+            elif price < 100000:
+                bucket = "50k_100k"
+            else:
+                bucket = "over_100k"
+
+            pl = t.get("profit_loss", 0)
+            buckets[bucket]["profit"] += pl
+            if pl > 0:
+                buckets[bucket]["wins"] += 1
+            else:
+                buckets[bucket]["losses"] += 1
+
+        best = None
+        worst = None
+        best_wr = -1
+        worst_wr = 101
+
+        details = []
+        for bucket, stats in sorted(buckets.items()):
+            total = stats["wins"] + stats["losses"]
+            if total < 3:
+                continue
+            wr = stats["wins"] / total * 100
+            name = bucket_names.get(bucket, bucket)
+            details.append(f"{name}: 승률 {wr:.0f}%({total}건) 손익 {stats['profit']:+,.0f}원")
+
+            if wr > best_wr:
+                best_wr = wr
+                best = name
+            if wr < worst_wr:
+                worst_wr = wr
+                worst = name
+
+        if not details:
+            return None
+
+        severity = "low"
+        if worst and worst_wr < 30:
+            severity = "high"
+        elif worst and worst_wr < 40:
+            severity = "medium"
+
+        return {
+            "area": "price_range",
+            "severity": severity,
+            "detail": " | ".join(details),
+            "recommendation": f"최적 가격대: {best}(승률 {best_wr:.0f}%)" if best else "",
+            "data": {
+                "best_range": best, "best_wr": round(best_wr, 1),
+                "worst_range": worst, "worst_wr": round(worst_wr, 1),
+            },
+        }
+
+    def _analyze_profit_distribution(self, sells: list[dict]) -> dict | None:
+        """수익/손실 크기 분포를 분석한다."""
+        rates = [t.get("profit_rate", 0) for t in sells]
+        if len(rates) < 5:
+            return None
+
+        wins = sorted([r for r in rates if r > 0])
+        losses = sorted([r for r in rates if r < 0])
+
+        avg_win = sum(wins) / len(wins) if wins else 0
+        avg_loss = sum(losses) / len(losses) if losses else 0
+        median_win = wins[len(wins) // 2] if wins else 0
+        median_loss = losses[len(losses) // 2] if losses else 0
+        max_win = max(wins) if wins else 0
+        max_loss = min(losses) if losses else 0
+
+        # 큰 손실이 작은 수익을 잡아먹는 패턴 확인
+        severity = "low"
+        if avg_loss != 0 and avg_win < abs(avg_loss) * 0.8:
+            severity = "high"
+        elif avg_loss != 0 and avg_win < abs(avg_loss):
+            severity = "medium"
+
+        return {
+            "area": "profit_distribution",
+            "severity": severity,
+            "detail": (
+                f"평균 수익 {avg_win:.2f}% (중앙값 {median_win:.2f}%, 최대 {max_win:.2f}%) | "
+                f"평균 손실 {avg_loss:.2f}% (중앙값 {median_loss:.2f}%, 최대 {max_loss:.2f}%) | "
+                f"손익비 {avg_win/abs(avg_loss):.2f}" if avg_loss != 0 else
+                f"평균 수익 {avg_win:.2f}% | 손실 없음"
+            ),
+            "data": {
+                "avg_win": round(avg_win, 2), "avg_loss": round(avg_loss, 2),
+                "median_win": round(median_win, 2), "median_loss": round(median_loss, 2),
+                "max_win": round(max_win, 2), "max_loss": round(max_loss, 2),
+            },
+        }
+
+    def _generate_review_report(self, sells: list[dict], findings: list[dict]) -> str:
+        """자연어 매매 복기 리포트를 생성한다."""
+        total = len(sells)
+        wins = sum(1 for t in sells if t.get("profit_loss", 0) > 0)
+        total_profit = sum(t.get("profit_loss", 0) for t in sells)
+        wr = wins / total * 100 if total > 0 else 0
+
+        lines = [
+            f"═══ 매매 복기 리포트 ═══",
+            f"분석 기간: 최근 {total}건 매도 거래",
+            f"전체 승률: {wr:.1f}% ({wins}승 {total - wins}패)",
+            f"총 손익: {total_profit:+,.0f}원",
+            "",
+        ]
+
+        # 핵심 발견사항
+        high_findings = [f for f in findings if f.get("severity") in ("high", "critical")]
+        medium_findings = [f for f in findings if f.get("severity") == "medium"]
+
+        if high_findings:
+            lines.append("▶ 긴급 개선 필요:")
+            for f in high_findings:
+                lines.append(f"  - {f['detail']}")
+                if f.get("recommendation"):
+                    lines.append(f"    → {f['recommendation']}")
+            lines.append("")
+
+        if medium_findings:
+            lines.append("▶ 개선 권장:")
+            for f in medium_findings:
+                lines.append(f"  - {f['detail']}")
+            lines.append("")
+
+        # 전략별 성과 요약 (reason_pattern findings에서 추출)
+        reason_findings = [f for f in findings if f.get("area") == "reason_pattern"]
+        if reason_findings:
+            lines.append("▶ 전략별 성과:")
+            for f in sorted(reason_findings, key=lambda x: x["data"]["win_rate"], reverse=True):
+                d = f["data"]
+                emoji = "✅" if d["win_rate"] >= 60 else "⚠️" if d["win_rate"] >= 40 else "❌"
+                lines.append(
+                    f"  {emoji} {d['keyword']}: 승률 {d['win_rate']:.0f}% "
+                    f"({d['total']}건) 평균 {d['avg_rate']:+.2f}%"
+                )
+            lines.append("")
+
+        # 연속 패턴
+        streak = next((f for f in findings if f.get("area") == "streak_pattern"), None)
+        if streak:
+            lines.append(f"▶ 연속 패턴: {streak['detail']}")
+            lines.append("")
+
+        lines.append(f"리포트 생성: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        return "\n".join(lines)
+
+    def _auto_apply_findings(self, findings: list[dict]) -> int:
+        """발견사항을 자동으로 규칙에 반영한다.
+
+        Returns:
+            적용된 규칙 수
+        """
+        applied = 0
+
+        for f in findings:
+            if f.get("severity") not in ("high", "critical"):
+                continue
+
+            area = f.get("area", "")
+            data = f.get("data", {})
+
+            # 가격대 약점 → stock_filters에 반영
+            if area == "price_range" and data.get("worst_wr", 100) < 30:
+                worst = data.get("worst_range", "")
+                if worst:
+                    filters = self.state.active_config.get("stock_filters", {})
+                    avoid_ranges = filters.get("avoid_price_ranges", [])
+                    if worst not in avoid_ranges:
+                        avoid_ranges.append(worst)
+                        self.state.active_config.setdefault("stock_filters", {})["avoid_price_ranges"] = avoid_ranges
+                        applied += 1
+                        logger.info("복기 자동적용: 가격대 '%s' 회피 (승률 %.0f%%)", worst, data["worst_wr"])
+
+            # 사유별 약점 → entry_signals에 반영
+            elif area == "reason_pattern" and data.get("win_rate", 100) < 30:
+                keyword = data.get("keyword", "")
+                if keyword:
+                    entry = self.state.active_config.setdefault("entry_signals", {})
+                    weak_signals = entry.get("weak_signals", [])
+                    if keyword not in weak_signals:
+                        weak_signals.append(keyword)
+                        entry["weak_signals"] = weak_signals
+                        applied += 1
+                        logger.info("복기 자동적용: '%s' 신호 약화 (승률 %.0f%%)", keyword, data["win_rate"])
+
+            # 보유기간 약점 → exit_timing에 반영
+            elif area == "holding_period":
+                if data.get("short_term_wr", 50) > data.get("swing_wr", 50) + 15:
+                    exit_cfg = self.state.active_config.setdefault("exit_timing", {})
+                    exit_cfg["prefer_short_term"] = True
+                    applied += 1
+                    logger.info("복기 자동적용: 단기 보유 전략 강화")
+                elif data.get("swing_wr", 50) > data.get("short_term_wr", 50) + 15:
+                    exit_cfg = self.state.active_config.setdefault("exit_timing", {})
+                    exit_cfg["prefer_short_term"] = False
+                    applied += 1
+                    logger.info("복기 자동적용: 장기 보유 전략 강화")
+
+        return applied
+
+    def _save_review(self, review: dict):
+        """복기 결과를 저장한다."""
+        self.REVIEW_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+        history = []
+        if self.REVIEW_FILE.exists():
+            try:
+                history = json.loads(self.REVIEW_FILE.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        history.append(review)
+        # 최근 20건만 유지
+        if len(history) > 20:
+            history = history[-20:]
+
+        self.REVIEW_FILE.write_text(
+            json.dumps(history, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )

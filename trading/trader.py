@@ -6,6 +6,7 @@ Expert 모드에서는 시장 컨텍스트와 멀티 타임프레임 분석을 �
 v2.7: 분석 기반 목표가 매도 — 상승여력 소진까지 홀딩
 v2.9: 레짐 적응형 전략 전환, 멀티 타임프레임 확인, 패턴 메모리, 리스크 자동 진화
 v3.0: 코드 자체 진화 엔진 연동 — 프로그램이 스스로 약점을 파악하고 개선
+v3.2: 전략 앙상블, Q-Learning, 포트폴리오 최적화, 자동 매매 복기
 """
 
 import json
@@ -67,6 +68,15 @@ class AutoTrader:
         # 누적 통계 관리
         self._state_mgr = StateManager()
 
+        # v3.2: 전략 앙상블
+        self._ensemble = None
+
+        # v3.2: Q-Learning 에이전트
+        self._q_agent = None
+
+        # v3.2: 포트폴리오 최적화
+        self._portfolio_optimizer = None
+
         if isinstance(strategy, ExpertStrategy):
             self._market_analyzer = MarketContextAnalyzer(api)
             strategy.market_analyzer = self._market_analyzer
@@ -85,7 +95,7 @@ class AutoTrader:
         self._init_evolution()
 
         logger.info("=" * 70)
-        logger.info("  OSHMS 자동 매매 시스템 v3.1 가동")
+        logger.info("  OSHMS 자동 매매 시스템 v3.2 가동")
         logger.info("  (워렌 버핏 가치투자 + 고급 기술분석 융합 전략)")
         logger.info("=" * 70)
         mode_str = "모의투자" if self.settings.is_mock else "실전투자"
@@ -157,7 +167,7 @@ class AutoTrader:
             logger.warning("진화 엔진 초기화 실패: %s", e)
             self._evolution = None
 
-        # Level 1~3: 코드 자체 진화 엔진
+        # Level 1~3: 코드 자체 진화 엔진 (+ 자동 매매 복기 v3.2)
         try:
             from learning.code_evolution import CodeEvolutionEngine
             self._code_evolution = CodeEvolutionEngine()
@@ -168,6 +178,34 @@ class AutoTrader:
         except Exception as e:
             logger.warning("코드 진화 엔진 초기화 실패: %s", e)
             self._code_evolution = None
+
+        # v3.2: 전략 앙상블 엔진
+        try:
+            from strategy.combined import CombinedStrategy
+            self._ensemble = CombinedStrategy()
+            logger.info("전략 앙상블 초기화 완료: %s", self._ensemble.get_ensemble_summary())
+        except Exception as e:
+            logger.warning("전략 앙상블 초기화 실패: %s", e)
+            self._ensemble = None
+
+        # v3.2: Q-Learning 에이전트
+        try:
+            from learning.q_learning import QLearningAgent
+            self._q_agent = QLearningAgent()
+            logger.info("Q-Learning 에이전트 초기화 완료 (상태 %d개, 학습 %d회)",
+                        self._q_agent.total_states, self._q_agent.total_updates)
+        except Exception as e:
+            logger.warning("Q-Learning 에이전트 초기화 실패: %s", e)
+            self._q_agent = None
+
+        # v3.2: 포트폴리오 최적화
+        try:
+            from trading.portfolio_optimizer import PortfolioOptimizer
+            self._portfolio_optimizer = PortfolioOptimizer()
+            logger.info("포트폴리오 최적화 초기화 완료")
+        except Exception as e:
+            logger.warning("포트폴리오 최적화 초기화 실패: %s", e)
+            self._portfolio_optimizer = None
 
     def _count_recent_trades(self) -> int:
         """최근 거래 수를 반환한다 (파라미터 진화용)."""
@@ -526,6 +564,16 @@ class AutoTrader:
         # 1. 보유 종목 가격 갱신
         self.order_manager.update_prices()
 
+        # 1.5 v3.2: 포트폴리오 최적화 갱신 (10사이클마다)
+        if self._portfolio_optimizer and self._cycle_count % 10 == 1:
+            try:
+                self._portfolio_optimizer.update(
+                    self.order_manager.positions,
+                    self.order_manager.trade_history,
+                )
+            except Exception as e:
+                logger.debug("포트폴리오 최적화 갱신 실패: %s", e)
+
         # 2. 리스크 관리 (최우선)
         self._check_risk_management()
 
@@ -770,8 +818,28 @@ class AutoTrader:
                         })
                 outcome = {"profit_rate": profit_rate, "decision": decision}
                 self._evolution.memorize_pattern(stock_code, snapshot, outcome)
+
+                # v3.2: Q-Learning 학습 (매도 완료 시 보상 업데이트)
+                if self._q_agent:
+                    self._q_agent.record_sell(stock_code, profit_rate, snapshot)
+
             except Exception:
                 pass
+
+        # v3.2: 전략 앙상블 성과 업데이트
+        if self._ensemble and stock_code:
+            try:
+                last_trade = self.order_manager.trade_history[-1] if self.order_manager.trade_history else None
+                if last_trade and last_trade.side == "SELL":
+                    reason = last_trade.reason if hasattr(last_trade, 'reason') else ""
+                    strategy_name = self._ensemble.identify_strategy(reason)
+                    self._ensemble.update_performance(
+                        strategy_name,
+                        float(last_trade.profit_loss),
+                        float(last_trade.profit_rate),
+                    )
+            except Exception as e:
+                logger.debug("앙상블 성과 업데이트 실패: %s", e)
 
     def _analyze_and_trade(self, stock_code: str) -> None:
         """종목을 분석하고 매매를 실행한다."""
@@ -916,6 +984,49 @@ class AutoTrader:
                 except Exception:
                     pass
 
+            # v3.2: Q-Learning 신뢰도 보정
+            if self._q_agent and isinstance(self.strategy, ExpertStrategy):
+                try:
+                    q_snap = {
+                        "regime": self._market_ctx.regime if self._market_ctx else "ranging",
+                        "rsi": analysis.technical.rsi if 'analysis' in dir() and analysis.technical else 50,
+                        "trend_score": analysis.technical.trend_score if 'analysis' in dir() and analysis.technical else 0,
+                        "volume_ratio": analysis.technical.volume_ratio if 'analysis' in dir() and analysis.technical else 1.0,
+                    }
+                    q_modifier = self._q_agent.get_confidence_modifier(q_snap)
+                    if q_modifier != 0:
+                        old_str = signal.strength
+                        signal = Signal(
+                            signal_type=signal.signal_type,
+                            stock_code=signal.stock_code,
+                            reason=signal.reason,
+                            strength=max(0, min(1.0, signal.strength + q_modifier)),
+                            target_price=signal.target_price,
+                        )
+                        if abs(q_modifier) > 0.05:
+                            logger.info(
+                                "  🧠 Q-Learning 보정: %.2f→%.2f (%+.3f)",
+                                old_str, signal.strength, q_modifier,
+                            )
+                except Exception:
+                    pass
+
+            # v3.2: 포트폴리오 최적화 — 매수 차단 확인
+            portfolio_size_mult = 1.0
+            if self._portfolio_optimizer:
+                try:
+                    blocked, block_reason = self._portfolio_optimizer.should_block_buy(
+                        stock_code, self.order_manager.positions)
+                    if blocked:
+                        logger.info("  📊 포트폴리오 매수 차단: %s", block_reason)
+                        return
+                    portfolio_size_mult = self._portfolio_optimizer.get_position_size_multiplier(
+                        stock_code)
+                    if portfolio_size_mult != 1.0:
+                        logger.debug("  📊 포트폴리오 사이즈 승수: %.2f", portfolio_size_mult)
+                except Exception:
+                    pass
+
             if signal.strength >= min_strength:
                 # 목표가 및 상승여력 계산
                 target_price = getattr(signal, "target_price", 0) or 0
@@ -935,7 +1046,15 @@ class AutoTrader:
                     target_price=target_price, estimated_upside=estimated_upside,
                     per=current_price.get("per", 0),
                     pbr=current_price.get("pbr", 0),
+                    size_mult=portfolio_size_mult,
                 )
+
+                # v3.2: Q-Learning 매수 상태 기록
+                if self._q_agent:
+                    try:
+                        self._q_agent.record_buy(stock_code, q_snap if 'q_snap' in dir() else {})
+                    except Exception:
+                        pass
             else:
                 logger.debug(
                     "  → 매수 신호 강도 부족: %.2f < %.2f (패스)", signal.strength, min_strength,

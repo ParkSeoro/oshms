@@ -174,7 +174,8 @@ class OrderManager:
     MIN_HOLD_SECONDS = 1800      # 최소 30분 보유 후 매도 (급등/급락 제외)
 
     def calc_buy_quantity(self, price: int, strength: float = 1.0,
-                          per: float = 0, pbr: float = 0) -> int:
+                          per: float = 0, pbr: float = 0,
+                          size_mult: float = 1.0) -> int:
         """매수 수량을 계산한다 (버핏식 집중투자).
 
         신호 강도 + 가치 평가에 따라 투자 금액을 조절한다.
@@ -184,6 +185,9 @@ class OrderManager:
         - 약한 신호 (<0.4): 최대 금액의 55%
 
         워렌 버핏 원칙: "확신이 있을 때 크게 베팅하라."
+
+        Args:
+            size_mult: 포트폴리오 최적화 승수 (0.5~1.3, 기본 1.0)
         """
         if price <= 0:
             return 0
@@ -199,7 +203,11 @@ class OrderManager:
             value_bonus += 0.02  # 저PBR 보너스
 
         invest_ratio = min(1.0, base_ratio + value_bonus)
-        effective_amount = int(self.settings.max_buy_amount * invest_ratio)
+
+        # 3. 포트폴리오 최적화 승수 적용
+        invest_ratio *= max(0.5, min(1.3, size_mult))
+
+        effective_amount = int(self.settings.max_buy_amount * min(1.0, invest_ratio))
         quantity = effective_amount // price
 
         # 3. 최소 수량 보장: 수익이 의미 있으려면 최소 금액 이상 투자
@@ -221,6 +229,7 @@ class OrderManager:
         strength: float = 0.5, atr: float = 0.0,
         target_price: int = 0, estimated_upside: float = 0.0,
         per: float = 0, pbr: float = 0,
+        size_mult: float = 1.0,
     ) -> bool:
         """매수를 실행한다."""
         if not self.can_buy():
@@ -231,7 +240,7 @@ class OrderManager:
             logger.warning("[%s] 이미 보유 중인 종목", stock_code)
             return False
 
-        quantity = self.calc_buy_quantity(price, strength, per=per, pbr=pbr)
+        quantity = self.calc_buy_quantity(price, strength, per=per, pbr=pbr, size_mult=size_mult)
         if quantity <= 0:
             logger.warning("[%s] 매수 수량 0: 가격=%d, 최대금액=%d", stock_code, price, self.settings.max_buy_amount)
             return False
