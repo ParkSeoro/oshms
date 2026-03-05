@@ -30,6 +30,9 @@ logs/
 # Reports
 reports/
 
+# Runtime state data
+data/
+
 # OS
 .DS_Store
 Thumbs.db
