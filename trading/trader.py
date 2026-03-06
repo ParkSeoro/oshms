@@ -208,24 +208,37 @@ class AutoTrader:
             self._portfolio_optimizer = None
 
     def _count_recent_trades(self) -> int:
-        """최근 거래 수를 반환한다 (파라미터 진화용)."""
+        """마지막 진화 이후 누적 거래 수를 반환한다 (파라미터 진화용).
+
+        v3.2: 재시작 시에도 전날 거래까지 포함하여 누적 카운팅.
+        마지막 진화 시점의 총 매도 수를 기억하고, 현재 총 매도 수와 비교.
+        """
         if not TRADES_FILE.exists():
             return 0
         try:
             trades = json.loads(TRADES_FILE.read_text(encoding="utf-8"))
-            sells = [t for t in trades if t.get("side") == "SELL"]
-            return len(sells) % 15  # 15건마다 진화하므로 나머지
+            total_sells = len([t for t in trades if t.get("side") == "SELL"])
+            last_evo_sells = 0
+            if self._evolution and hasattr(self._evolution, 'state'):
+                last_evo_sells = getattr(self._evolution.state, 'last_evolve_sell_count', 0)
+            return total_sells - last_evo_sells
         except Exception:
             return 0
 
     def _count_recent_trades_for_code_evo(self) -> int:
-        """최근 거래 수를 반환한다 (코드 진화용)."""
+        """마지막 코드 진화 이후 누적 거래 수를 반환한다.
+
+        v3.2: 재시작 시에도 전날 거래까지 포함하여 누적 카운팅.
+        """
         if not TRADES_FILE.exists():
             return 0
         try:
             trades = json.loads(TRADES_FILE.read_text(encoding="utf-8"))
-            sells = [t for t in trades if t.get("side") == "SELL"]
-            return len(sells) % 20  # 20건마다 코드 진화
+            total_sells = len([t for t in trades if t.get("side") == "SELL"])
+            last_code_evo_sells = 0
+            if self._code_evolution and hasattr(self._code_evolution, 'state'):
+                last_code_evo_sells = getattr(self._code_evolution.state, 'last_evolve_sell_count', 0)
+            return total_sells - last_code_evo_sells
         except Exception:
             return 0
 
@@ -253,6 +266,10 @@ class AutoTrader:
 
             result = self._evolution.evolve(trades, candles)
             self._trades_since_evolution = 0
+
+            # v3.2: 현재 총 매도 수를 기록 (재시작 시 누적 카운팅용)
+            total_sells = len([t for t in trades if t.get("side") == "SELL"])
+            self._evolution.state.last_evolve_sell_count = total_sells
 
             # 진화 결과 적용
             adjustments = self._evolution.get_strategy_adjustments()
@@ -303,6 +320,10 @@ class AutoTrader:
 
             result = self._code_evolution.run_evolution_cycle(trades, candles)
             self._trades_since_code_evolution = 0
+
+            # v3.2: 현재 총 매도 수를 기록 (재시작 시 누적 카운팅용)
+            total_sells = len([t for t in trades if t.get("side") == "SELL"])
+            self._code_evolution.state.last_evolve_sell_count = total_sells
 
             status = result.get("status", "")
 
@@ -646,28 +667,16 @@ class AutoTrader:
                 except Exception as e:
                     logger.error("[%s] 목표가 매도 실패: %s", code, e)
 
-        # ── 3. 손절 (극단적 하락만 — -3% 하드스탑) ──
+        # ── 3. 마이너스 종목 모니터링 (v3.2: 손절 매도 제거 — 반등 대기) ──
         for code in self.order_manager.check_stop_loss():
-            try:
-                pos = self.order_manager.positions.get(code)
-                if not pos:
-                    continue
+            pos = self.order_manager.positions.get(code)
+            if pos:
+                logger.info(
+                    "[%s] 마이너스 %.2f%% — 반등 대기 (매수 근거 유효, 매도하지 않음)",
+                    code, pos.profit_rate,
+                )
 
-                if pos.profit_rate <= -3.0:
-                    pr = pos.profit_rate
-                    self.order_manager.execute_sell(code, "손절")
-                    self._cooldown_stocks[code] = time.time() + self._COOLDOWN_SECONDS
-                    logger.info("[%s] 쿨다운 등록: %d초간 재매수 금지", code, self._COOLDOWN_SECONDS)
-                    self._on_trade_completed(code, pr, "BUY")
-                else:
-                    logger.info(
-                        "[%s] 손절 대기: %.2f%% (기준: -3.0%% 미만 시 매도)",
-                        code, pos.profit_rate,
-                    )
-            except Exception as e:
-                logger.error("[%s] 손절 매도 실패: %s", code, e)
-
-        # ── 4. 장마감 처리 (15:20 이후 — 수익 큰 종목만 청산, 나머지 보유) ──
+        # ── 4. 장마감 처리 (15:20 이후 — 수익 종목만 청산, 손실 종목은 오버나이트) ──
         now_str = datetime.now().strftime("%H:%M")
         if now_str >= "15:20":
             remaining = list(self.order_manager.positions.keys())
@@ -682,16 +691,8 @@ class AutoTrader:
                         )
                         self.order_manager.execute_sell(code, "장마감익절(수익확정)")
                         self._on_trade_completed(code, pos.profit_rate, "SELL")
-                    # 큰 손실 (-3%+): 청산
-                    elif pos.profit_rate <= -3.0:
-                        logger.info(
-                            "장마감 손절: %s(%s) 수익률=%.2f%%",
-                            pos.stock_name, code, pos.profit_rate,
-                        )
-                        self.order_manager.execute_sell(code, "장마감청산(손절)")
-                        self._on_trade_completed(code, pos.profit_rate, "BUY")
                     else:
-                        # 소폭 수익/손실: 오버나이트 보유 (내일 목표가 도달 대기)
+                        # v3.2: 손실/소폭수익 모두 오버나이트 보유 (반등 대기)
                         logger.info(
                             "장마감 보유유지: %s(%s) 수익률=%.2f%% 목표가=%s (오버나이트)",
                             pos.stock_name, code, pos.profit_rate,

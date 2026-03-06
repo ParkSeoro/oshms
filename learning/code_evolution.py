@@ -94,6 +94,8 @@ class CodeEvolutionState:
     last_diagnosis: dict = field(default_factory=dict)
     total_improvements: int = 0
     total_rollbacks: int = 0
+    # v3.2: 마지막 진화 시점 총 매도 수 (재시작 시 누적 카운팅용)
+    last_evolve_sell_count: int = 0
 
 
 # ══════════════════════════════════════════════════

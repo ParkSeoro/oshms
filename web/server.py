@@ -291,6 +291,52 @@ def api_report():
     })
 
 
+@app.route("/api/v32/ensemble")
+def api_ensemble():
+    """v3.2: 전략 앙상블 현황."""
+    try:
+        from strategy.combined import CombinedStrategy
+        ensemble = CombinedStrategy()
+        return jsonify(ensemble.get_ensemble_summary())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v32/qlearning")
+def api_qlearning():
+    """v3.2: Q-Learning 현황."""
+    try:
+        from learning.q_learning import QLearningAgent
+        agent = QLearningAgent()
+        return jsonify(agent.get_summary())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v32/portfolio")
+def api_portfolio():
+    """v3.2: 포트폴리오 최적화 현황."""
+    try:
+        from trading.portfolio_optimizer import PortfolioOptimizer
+        optimizer = PortfolioOptimizer()
+        return jsonify(optimizer.get_portfolio_report())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v32/evolution")
+def api_evolution():
+    """v3.2: 코드 진화 + 매매 복기 현황."""
+    try:
+        from learning.code_evolution import CodeEvolutionEngine
+        engine = CodeEvolutionEngine()
+        summary = engine.get_evolution_summary()
+        summary["review_report"] = engine.get_trade_review_report()
+        return jsonify(summary)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 def run_server(host="0.0.0.0", port=5000, debug=False):
     """웹 서버를 실행한다."""
     logger.info("OSHMS 웹 서버 시작: http://%s:%d", host, port)

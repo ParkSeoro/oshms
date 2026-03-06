@@ -144,9 +144,10 @@ class OrderManager:
         profit_pct = pos.profit_rate
         profit_krw = pos.profit_loss
 
-        # 손절은 무조건 허용 (리스크 관리)
-        if profit_pct <= -3.0:
-            return True, "손절 대상"
+        # v3.2: 마이너스 수익률에서는 절대 매도하지 않는다
+        # 매수한 이유가 있으므로 반등을 기다린다
+        if profit_pct <= 0:
+            return False, f"마이너스 수익률 ({profit_pct:.2f}%) — 반등 대기"
 
         # 최소 보유 시간 확인 (30분)
         try:
@@ -160,11 +161,10 @@ class OrderManager:
             pass
 
         # 수익 중일 때: 최소 수익 임계값 확인
-        if profit_pct > 0:
-            if profit_pct < self.MIN_SELL_PROFIT_PCT:
-                return False, f"수익률 부족 ({profit_pct:.2f}% < {self.MIN_SELL_PROFIT_PCT}%)"
-            if profit_krw < self.MIN_SELL_PROFIT_KRW:
-                return False, f"수익금 부족 ({profit_krw:,}원 < {self.MIN_SELL_PROFIT_KRW:,}원)"
+        if profit_pct < self.MIN_SELL_PROFIT_PCT:
+            return False, f"수익률 부족 ({profit_pct:.2f}% < {self.MIN_SELL_PROFIT_PCT}%)"
+        if profit_krw < self.MIN_SELL_PROFIT_KRW:
+            return False, f"수익금 부족 ({profit_krw:,}원 < {self.MIN_SELL_PROFIT_KRW:,}원)"
 
         return True, "매도 가능"
 

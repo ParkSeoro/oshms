@@ -48,6 +48,8 @@ class EvolutionState:
     risk_evolution_history: list[dict] = field(default_factory=list)
     # v2.9: 패턴 메모리 DB
     pattern_memory: list[dict] = field(default_factory=list)
+    # v3.2: 마지막 진화 시점 총 매도 수 (재시작 시 누적 카운팅용)
+    last_evolve_sell_count: int = 0
 
 
 class EvolutionEngine:
