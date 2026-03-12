@@ -1878,12 +1878,14 @@ body::after {
         var tRows = '';
         var recentItems = report.daily.slice(-8).reverse();
         recentItems.forEach(function(item) {
-          var rPL = item.profit || item.total_profit || 0;
+          var rPL = item.profit || 0;
           var rCls = plClass(rPL);
+          var buys = item.buy_count || 0;
+          var sellCnt = item.sell_count || 0;
           tRows += '<tr>' +
             '<td>' + (item.date || '--') + '</td>' +
-            '<td>' + (item.stock_name || item.stock_code || '--') + '</td>' +
-            '<td>' + (item.side || item.type || '--') + '</td>' +
+            '<td>매수 ' + buys + ' / 매도 ' + sellCnt + '</td>' +
+            '<td>' + (item.profit_rate ? item.profit_rate.toFixed(1) + '%' : '--') + '</td>' +
             '<td class="' + rCls + '">' + plSign(rPL) + fmtWon(rPL) + '</td>' +
             '</tr>';
         });

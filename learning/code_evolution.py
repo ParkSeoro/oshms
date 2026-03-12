@@ -116,12 +116,12 @@ class CodeEvolutionEngine:
         config = engine.get_active_config()
     """
 
-    # 진화 사이클 간격 (거래 수 기준) — v3.2: 20→8 빠른 코드 진화
-    CYCLE_INTERVAL = 8
+    # 진화 사이클 간격 (거래 수 기준) — v3.2: 20→3 빠른 코드 진화
+    CYCLE_INTERVAL = 3
     # 성능 악화 시 자동 롤백 임계값
     ROLLBACK_THRESHOLD = -15  # 적합도 15점 이상 하락 시
-    # 최소 거래 수 (진화 시작 조건) — v3.2: 15→5 빠른 적응
-    MIN_TRADES_FOR_EVOLUTION = 5
+    # 최소 거래 수 (진화 시작 조건) — v3.2: 15→1 즉시 진화
+    MIN_TRADES_FOR_EVOLUTION = 1
 
     def __init__(self):
         self.state = self._load_state()
@@ -420,7 +420,7 @@ class CodeEvolutionEngine:
         worst_hour = None
         worst_rate = 100
         for hour, profits in by_hour.items():
-            if len(profits) < 3:
+            if len(profits) < 1:
                 continue
             wr = sum(1 for p in profits if p > 0) / len(profits) * 100
             if wr < worst_rate:
@@ -571,10 +571,14 @@ class CodeEvolutionEngine:
                 except ValueError:
                     pass
 
-            # 한번도 실행 안 된 모듈 보너스
+            # 한번도 실행 안 된 모듈 보너스 (v3.2: 10→ 더 높은 보너스)
             applied_ids = [a["module_id"] for a in self.state.applied_modules]
             if mid not in applied_ids:
-                base_score += 5
+                base_score += 15  # 미실행 모듈을 적극 실행
+
+            # 약점이 없어도 최소 우선순위 부여 (v3.2: 데이터 적을 때도 진화)
+            if base_score == 0 and module.get("status") != "cooldown":
+                base_score = 3
 
             module["priority"] = round(base_score, 1)
 
@@ -659,11 +663,11 @@ class CodeEvolutionEngine:
     def _should_rollback(self) -> bool:
         """성능 악화 시 롤백이 필요한지 판단한다."""
         history = self.state.performance_history
-        if len(history) < 3:
+        if len(history) < 2:
             return False
 
-        # 최근 3번의 성능 추이 확인
-        recent = history[-3:]
+        # 최근 성능 추이 확인
+        recent = history[-min(3, len(history)):]
         scores = [h["score"] for h in recent]
 
         # 연속 하락 체크
@@ -720,14 +724,14 @@ class CodeEvolutionEngine:
         adjustments = {}
         for kw, stats in reason_stats.items():
             total = stats["wins"] + stats["losses"]
-            if total < 3:
+            if total < 1:
                 continue
             wr = stats["wins"] / total
 
             if wr > 0.6:
                 adjustments[kw] = {"action": "boost", "weight_adj": +0.05,
                                     "reason": f"승률 {wr*100:.0f}%"}
-            elif wr < 0.35:
+            elif wr < 0.4:
                 adjustments[kw] = {"action": "reduce", "weight_adj": -0.05,
                                     "reason": f"승률 {wr*100:.0f}%"}
 
@@ -894,15 +898,15 @@ class CodeEvolutionEngine:
         preferred = []
         for hour, stats in sorted(by_hour.items()):
             total = stats["wins"] + stats["losses"]
-            if total < 3:
+            if total < 1:
                 continue
             wr = stats["wins"] / total * 100
             avg = stats["profit"] / total
 
-            if wr < 30 and total >= 5:
+            if wr < 30 and total >= 1:
                 blocked.append({"hour": hour, "win_rate": round(wr, 1),
                                 "avg_profit": round(avg, 0), "trades": total})
-            elif wr > 65 and total >= 5:
+            elif wr > 65 and total >= 1:
                 preferred.append({"hour": hour, "win_rate": round(wr, 1),
                                   "avg_profit": round(avg, 0), "trades": total})
 
@@ -954,7 +958,7 @@ class CodeEvolutionEngine:
         weights = {}
         for ind, s in stats.items():
             total = s["wins"] + s["losses"]
-            if total < 3:
+            if total < 1:
                 continue
             wr = s["wins"] / total
             avg_profit = s["total_profit"] / total
@@ -1401,8 +1405,8 @@ class CodeEvolutionEngine:
         Returns:
             {findings, additional_weaknesses, report, auto_applied}
         """
-        if len(sells) < 5:
-            return {"findings": [], "additional_weaknesses": [], "report": "거래 데이터 부족", "auto_applied": 0}
+        if not sells:
+            return {"findings": [], "additional_weaknesses": [], "report": "거래 데이터 없음", "auto_applied": 0}
 
         findings = []
         additional_weaknesses = []
@@ -1562,7 +1566,7 @@ class CodeEvolutionEngine:
 
         findings = []
         for kw, data in stats.items():
-            if len(data["profits"]) < 3:
+            if len(data["profits"]) < 1:
                 continue
 
             total = len(data["profits"])
@@ -1699,7 +1703,7 @@ class CodeEvolutionEngine:
         details = []
         for bucket, stats in sorted(buckets.items()):
             total = stats["wins"] + stats["losses"]
-            if total < 3:
+            if total < 1:
                 continue
             wr = stats["wins"] / total * 100
             name = bucket_names.get(bucket, bucket)

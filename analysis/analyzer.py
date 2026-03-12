@@ -57,23 +57,24 @@ class ProfitAnalyzer:
         profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else float("inf")
 
         return {
-            "기간": self._get_period(),
-            "총거래횟수": len(self.trades),
-            "매수횟수": len(buys),
-            "매도횟수": len(sells),
-            "총매수금액": total_buy_amount,
-            "총매도금액": total_sell_amount,
-            "총실현손익": total_profit,
-            "총수익률": (total_profit / total_buy_amount * 100) if total_buy_amount else 0,
-            "승률": win_rate,
-            "승리": len(wins),
-            "패배": len(losses),
-            "무승부": len(evens),
-            "평균수익(승)": avg_win,
-            "평균손실(패)": avg_loss,
-            "손익비": profit_factor,
-            "최대수익거래": max((t.profit_loss for t in sells), default=0),
-            "최대손실거래": min((t.profit_loss for t in sells), default=0),
+            # 영문 키 (대시보드 JS 호환)
+            "total_trades": len(self.trades),
+            "buy_count": len(buys),
+            "sell_count": len(sells),
+            "total_buy_amount": total_buy_amount,
+            "total_sell_amount": total_sell_amount,
+            "total_profit": total_profit,
+            "total_profit_rate": (total_profit / total_buy_amount * 100) if total_buy_amount else 0,
+            "win_rate": win_rate,
+            "wins": len(wins),
+            "losses": len(losses),
+            "evens": len(evens),
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "profit_factor": profit_factor,
+            "best_trade": max((t.profit_loss for t in sells), default=0),
+            "worst_trade": min((t.profit_loss for t in sells), default=0),
+            "period": self._get_period(),
         }
 
     def get_daily_summary(self) -> list[dict]:
@@ -92,12 +93,12 @@ class ProfitAnalyzer:
             buy_amount = sum(t.amount for t in buys)
 
             results.append({
-                "날짜": date,
-                "매수": len(buys),
-                "매도": len(sells),
-                "실현손익": profit,
-                "수익률": (profit / buy_amount * 100) if buy_amount else 0,
-                "매수금액": buy_amount,
+                "date": date,
+                "buy_count": len(buys),
+                "sell_count": len(sells),
+                "profit": profit,
+                "profit_rate": (profit / buy_amount * 100) if buy_amount else 0,
+                "buy_amount": buy_amount,
             })
         return results
 
@@ -119,16 +120,16 @@ class ProfitAnalyzer:
             wins = len([t for t in sells if t.profit_loss > 0])
 
             results.append({
-                "종목코드": code,
-                "종목명": name,
-                "매수횟수": len(buys),
-                "매도횟수": len(sells),
-                "실현손익": profit,
-                "수익률": (profit / buy_amount * 100) if buy_amount else 0,
-                "승률": (wins / len(sells) * 100) if sells else 0,
+                "stock_code": code,
+                "stock_name": name,
+                "buy_count": len(buys),
+                "sell_count": len(sells),
+                "profit": profit,
+                "profit_rate": (profit / buy_amount * 100) if buy_amount else 0,
+                "win_rate": (wins / len(sells) * 100) if sells else 0,
             })
 
-        results.sort(key=lambda x: x["실현손익"], reverse=True)
+        results.sort(key=lambda x: x["profit"], reverse=True)
         return results
 
     def get_hourly_analysis(self) -> list[dict]:

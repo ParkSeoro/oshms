@@ -284,8 +284,33 @@ def api_save_settings():
 def api_report():
     from analysis.analyzer import ProfitAnalyzer
     analyzer = ProfitAnalyzer()
+    summary = analyzer.get_summary()
+
+    # 진화 세대 정보 추가
+    try:
+        from learning.evolution import EvolutionEngine
+        evo = EvolutionEngine()
+        summary["generation"] = evo.state.generation
+        summary["best_fitness"] = evo.state.best_fitness
+        summary["active_rules"] = len(evo.state.active_rules)
+    except Exception:
+        summary["generation"] = 0
+
+    # 누적통계(StateManager) 병합
+    try:
+        from trading.state_manager import StateManager
+        sm = StateManager()
+        stats = sm.get_stats_summary()
+        # StateManager의 누적값이 더 정확할 수 있음 — trades.json 기반 값과 비교
+        if stats.get("total_trades", 0) > summary.get("total_trades", 0):
+            summary["total_trades"] = stats["total_trades"]
+            summary["win_rate"] = stats["win_rate"]
+            summary["total_profit"] = stats["total_profit"]
+    except Exception:
+        pass
+
     return jsonify({
-        "summary": analyzer.get_summary(),
+        "summary": summary,
         "daily": analyzer.get_daily_summary(),
         "by_stock": analyzer.get_stock_summary(),
     })

@@ -52,12 +52,12 @@ class SelfLearner:
         Args:
             trades: TradeRecord를 dict로 변환한 거래 기록 리스트
         """
-        if len(trades) < 10:
-            logger.info("학습 데이터 부족 (%d건, 최소 10건 필요)", len(trades))
+        if len(trades) < 1:
+            logger.info("학습 데이터 없음")
             return []
 
         sells = [t for t in trades if t.get("side") == "SELL"]
-        if len(sells) < 5:
+        if not sells:
             return []
 
         new_insights = []
@@ -157,7 +157,7 @@ class SelfLearner:
                 by_hour[hour[-2:]].append(t.get("profit_loss", 0))
 
         for hour, profits in by_hour.items():
-            if len(profits) < 3:
+            if len(profits) < 1:
                 continue
 
             win_rate = sum(1 for p in profits if p > 0) / len(profits) * 100
@@ -195,7 +195,7 @@ class SelfLearner:
                     by_reason[keyword].append(t.get("profit_loss", 0))
 
         for keyword, profits in by_reason.items():
-            if len(profits) < 3:
+            if len(profits) < 1:
                 continue
             win_rate = sum(1 for p in profits if p > 0) / len(profits) * 100
             avg = sum(profits) / len(profits)

@@ -59,7 +59,7 @@ class EvolutionEngine:
     매 N건의 거래 후 진화 사이클을 실행한다.
     """
 
-    EVOLUTION_INTERVAL = 5  # N건 거래마다 진화 (v3.2: 15→5 빠른 적응)
+    EVOLUTION_INTERVAL = 3  # N건 거래마다 진화 (v3.2: 15→3 빠른 적응)
     MAX_RULES = 20
 
     def __init__(self):
@@ -280,7 +280,7 @@ class EvolutionEngine:
         adjustments = {}
 
         sells = [t for t in trades if t.get("side") == "SELL"]
-        if len(sells) < 5:
+        if not sells:
             return adjustments
 
         # 사유별 성과 분석
@@ -311,7 +311,7 @@ class EvolutionEngine:
 
         for keyword, perf in reason_performance.items():
             total = perf["wins"] + perf["losses"]
-            if total < 3:
+            if total < 1:
                 continue
             win_rate = perf["wins"] / total
             weight_key = keyword_to_weight.get(keyword, "")
