@@ -286,16 +286,24 @@ class AutoTrader:
                 self.strategy.apply_adjustments(adjustments)
                 logger.info("진화 조정 적용: %s", adjustments)
 
-            # v2.9: 리스크 파라미터 자동 진화 적용
+            # v2.9→v3.2: 리스크 파라미터 자동 진화 — 실제 적용
             risk = result.get("risk_params", {})
             if risk:
+                applied = []
+                if risk.get("stop_loss_pct") and hasattr(self.settings, 'stop_loss_pct'):
+                    self.settings.stop_loss_pct = risk["stop_loss_pct"]
+                    applied.append(f"손절={risk['stop_loss_pct']:.1f}%")
                 if risk.get("trailing_base"):
-                    logger.info(
-                        "리스크 진화 적용: 손절=%.1f%% 트레일링=%.1f%% 익절=%.0f%%",
-                        risk.get("stop_loss_pct", -3),
-                        risk.get("trailing_base", 3),
-                        risk.get("take_profit_pct", 20),
-                    )
+                    self._trailing_base = risk["trailing_base"]
+                    applied.append(f"트레일링={risk['trailing_base']:.1f}%")
+                if risk.get("take_profit_pct") and hasattr(self.settings, 'take_profit_pct'):
+                    self.settings.take_profit_pct = risk["take_profit_pct"]
+                    applied.append(f"익절={risk['take_profit_pct']:.0f}%")
+                if risk.get("cooldown_seconds"):
+                    self._COOLDOWN_SECONDS = int(risk["cooldown_seconds"])
+                    applied.append(f"쿨다운={risk['cooldown_seconds']}초")
+                if applied:
+                    logger.info("리스크 진화 실적용: %s", " | ".join(applied))
 
             logger.info(
                 "진화 세대 #%d 완료: 적합도=%.1f (규칙 +%d -%d)",
