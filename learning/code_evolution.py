@@ -116,12 +116,12 @@ class CodeEvolutionEngine:
         config = engine.get_active_config()
     """
 
-    # 진화 사이클 간격 (거래 수 기준)
-    CYCLE_INTERVAL = 20
+    # 진화 사이클 간격 (거래 수 기준) — v3.2: 20→8 빠른 코드 진화
+    CYCLE_INTERVAL = 8
     # 성능 악화 시 자동 롤백 임계값
     ROLLBACK_THRESHOLD = -15  # 적합도 15점 이상 하락 시
-    # 최소 거래 수 (진화 시작 조건)
-    MIN_TRADES_FOR_EVOLUTION = 15
+    # 최소 거래 수 (진화 시작 조건) — v3.2: 15→5 빠른 적응
+    MIN_TRADES_FOR_EVOLUTION = 5
 
     def __init__(self):
         self.state = self._load_state()

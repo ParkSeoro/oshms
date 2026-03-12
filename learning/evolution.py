@@ -59,7 +59,7 @@ class EvolutionEngine:
     매 N건의 거래 후 진화 사이클을 실행한다.
     """
 
-    EVOLUTION_INTERVAL = 15  # N건 거래마다 진화
+    EVOLUTION_INTERVAL = 5  # N건 거래마다 진화 (v3.2: 15→5 빠른 적응)
     MAX_RULES = 20
 
     def __init__(self):

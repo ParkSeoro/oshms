@@ -168,10 +168,10 @@ class OrderManager:
 
         return True, "매도 가능"
 
-    # 매도 시 최소 수익 기준 (워렌 버핏: 너무 작은 수익에 매도하지 않는다)
-    MIN_SELL_PROFIT_PCT = 2.0    # 최소 2% 이상 수익일 때만 매도
-    MIN_SELL_PROFIT_KRW = 3000   # 최소 3,000원 이상 수익일 때만 매도
-    MIN_HOLD_SECONDS = 1800      # 최소 30분 보유 후 매도 (급등/급락 제외)
+    # 매도 시 최소 수익 기준 — v3.2: 임계값 대폭 하향 (수익 확정 빈도 ↑)
+    MIN_SELL_PROFIT_PCT = 0.5    # 최소 0.5% 이상 수익 (v3.2: 2%→0.5% 소폭 수익도 확정)
+    MIN_SELL_PROFIT_KRW = 1000   # 최소 1,000원 이상 수익 (v3.2: 3000→1000원)
+    MIN_HOLD_SECONDS = 600       # 최소 10분 보유 후 매도 (v3.2: 30분→10분 빠른 회전)
 
     def calc_buy_quantity(self, price: int, strength: float = 1.0,
                           per: float = 0, pbr: float = 0,

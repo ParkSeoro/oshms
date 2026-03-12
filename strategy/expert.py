@@ -106,10 +106,11 @@ class ExpertStrategy(BaseStrategy):
     }
 
     # 기본 매매 임계값 (종목별 동적으로 조정됨)
+    # v3.2: 매도 감도 향상 — 빠른 손실 방어 + 소폭 수익 확정
     STRONG_BUY_THRESHOLD = 0.25
     BUY_THRESHOLD = 0.15
-    SELL_THRESHOLD = -0.08
-    STRONG_SELL_THRESHOLD = -0.20
+    SELL_THRESHOLD = -0.05      # v3.2: -0.08→-0.05 (매도 신호 민감도 ↑)
+    STRONG_SELL_THRESHOLD = -0.15  # v3.2: -0.20→-0.15 (강한 매도 신호 빠르게)
 
     # 종목 프로필 파일
     STOCK_PROFILES_FILE = Path("data/stock_profiles.json")

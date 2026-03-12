@@ -58,11 +58,11 @@ class CombinedStrategy(BaseStrategy):
             "momentum": {"wins": 0, "losses": 0, "total_profit": 0.0, "ema_score": 0.5},
         }
 
-        # 현재 동적 가중치
+        # 현재 동적 가중치 — v3.2: 모멘텀 비중 강화 (추세 매매 수익 극대화)
         self.weights: dict[str, float] = {
-            "expert": 0.50,
-            "scalping": 0.30,
-            "momentum": 0.20,
+            "expert": 0.45,
+            "scalping": 0.27,
+            "momentum": 0.28,
         }
 
         self._load_performance()

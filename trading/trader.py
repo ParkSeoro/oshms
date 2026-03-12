@@ -247,17 +247,25 @@ class AutoTrader:
         if not self._evolution or not self._evolution_enabled:
             return
         if not self._evolution.should_evolve(self._trades_since_evolution):
+            if self._cycle_count % 10 == 0:
+                logger.debug("파라미터 진화 대기: %d/%d건",
+                             self._trades_since_evolution, self._evolution.EVOLUTION_INTERVAL)
             return
 
         logger.info("진화 조건 충족 (%d건 거래) - 진화 사이클 시작", self._trades_since_evolution)
         try:
             trades = self._load_trades()
             if not trades:
+                logger.warning("진화 스킵: 거래 기록이 비어있음")
                 return
 
-            # 최근 캔들 데이터 (진화 최적화용)
+            # 캔들 데이터 — 보유 종목 또는 최근 거래 종목에서 가져오기
             candles = None
             held_codes = list(self.order_manager.positions.keys())
+            if not held_codes:
+                # 보유 종목이 없으면 최근 거래 종목에서 캔들 확보
+                recent_codes = [t.get("code") for t in reversed(trades) if t.get("code")]
+                held_codes = recent_codes[:1]
             if held_codes:
                 try:
                     candles = self.api.get_daily_chart(held_codes[0], count=60)
@@ -267,9 +275,10 @@ class AutoTrader:
             result = self._evolution.evolve(trades, candles)
             self._trades_since_evolution = 0
 
-            # v3.2: 현재 총 매도 수를 기록 (재시작 시 누적 카운팅용)
+            # v3.2: 현재 총 매도 수를 기록 후 다시 저장 (재시작 시 누적 카운팅용)
             total_sells = len([t for t in trades if t.get("side") == "SELL"])
             self._evolution.state.last_evolve_sell_count = total_sells
+            self._evolution._save_state()
 
             # 진화 결과 적용
             adjustments = self._evolution.get_strategy_adjustments()
@@ -301,6 +310,9 @@ class AutoTrader:
         if not self._code_evolution:
             return
         if not self._code_evolution.should_evolve(self._trades_since_code_evolution):
+            if self._cycle_count % 10 == 0:
+                logger.debug("코드 진화 대기: %d/%d건",
+                             self._trades_since_code_evolution, self._code_evolution.CYCLE_INTERVAL)
             return
 
         logger.info("코드 진화 조건 충족 (%d건) — 자체 진화 사이클 시작",
@@ -308,10 +320,14 @@ class AutoTrader:
         try:
             trades = self._load_trades()
             if not trades:
+                logger.warning("코드 진화 스킵: 거래 기록이 비어있음")
                 return
 
             candles = None
             held_codes = list(self.order_manager.positions.keys())
+            if not held_codes:
+                recent_codes = [t.get("code") for t in reversed(trades) if t.get("code")]
+                held_codes = recent_codes[:1]
             if held_codes:
                 try:
                     candles = self.api.get_daily_chart(held_codes[0], count=60)
@@ -321,9 +337,10 @@ class AutoTrader:
             result = self._code_evolution.run_evolution_cycle(trades, candles)
             self._trades_since_code_evolution = 0
 
-            # v3.2: 현재 총 매도 수를 기록 (재시작 시 누적 카운팅용)
+            # v3.2: 현재 총 매도 수를 기록 후 다시 저장 (재시작 시 누적 카운팅용)
             total_sells = len([t for t in trades if t.get("side") == "SELL"])
             self._code_evolution.state.last_evolve_sell_count = total_sells
+            self._code_evolution._save_state()
 
             status = result.get("status", "")
 
@@ -396,10 +413,12 @@ class AutoTrader:
     def _load_trades(self) -> list[dict]:
         """거래 기록을 로드한다."""
         if not TRADES_FILE.exists():
+            logger.warning("거래 기록 파일 없음: %s — 진화 불가", TRADES_FILE)
             return []
         try:
             return json.loads(TRADES_FILE.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            logger.error("거래 기록 파일 로드 실패: %s", e)
             return []
 
     # ──────────────────────────────────────────────
@@ -609,10 +628,13 @@ class AutoTrader:
             except Exception as e:
                 logger.error("[%s] 분석 중 오류: %s", stock_code, e)
 
-        # 4. 진화 체크 (파라미터 진화 + 코드 자체 진화 독립 실행)
-        if self._cycle_count % 5 == 0:
-            self._try_evolve()
-            self._try_code_evolution()
+        # 4. 진화 체크 — 매 사이클마다 (v3.2: 5사이클→매사이클, 빠른 적응)
+        self._try_evolve()
+        self._try_code_evolution()
+
+        # 5. v3.2: 모멘텀 돌파 스캔 (3사이클마다 — 거래량 급등 종목 자동 포착)
+        if self._cycle_count % 3 == 0 and self.order_manager.can_buy():
+            self._scan_momentum_breakouts(stocks)
 
         if self._cycle_count % 10 == 0:
             self._log_status()
@@ -841,6 +863,89 @@ class AutoTrader:
                     )
             except Exception as e:
                 logger.debug("앙상블 성과 업데이트 실패: %s", e)
+
+    def _scan_momentum_breakouts(self, stocks: list[str]) -> None:
+        """v3.2: 거래량 급등 + 가격 돌파 종목을 자동 포착하여 매수한다.
+
+        이미 분석된 종목 중 거래량이 평소 대비 3배 이상이면서
+        당일 고가를 돌파하는 종목을 자동 매수한다.
+        """
+        if not self.order_manager.can_buy():
+            return
+
+        for stock_code in stocks[:10]:  # 상위 10종목만 스캔
+            if stock_code in self.order_manager.positions:
+                continue
+            if stock_code in self._cooldown_stocks:
+                if time.time() < self._cooldown_stocks[stock_code]:
+                    continue
+
+            try:
+                current = self.api.get_current_price(stock_code)
+                if not current or current.get("price", 0) <= 0:
+                    continue
+
+                candles = self.api.get_minute_chart(stock_code, period="3")
+                if not candles or len(candles) < 10:
+                    continue
+
+                # 거래량 비율 계산 (최근 3봉 vs 이전 평균)
+                recent_vols = [c.get("volume", 0) for c in candles[:3]]
+                older_vols = [c.get("volume", 0) for c in candles[3:13]]
+                avg_recent = sum(recent_vols) / max(len(recent_vols), 1)
+                avg_older = sum(older_vols) / max(len(older_vols), 1)
+
+                if avg_older <= 0:
+                    continue
+
+                volume_ratio = avg_recent / avg_older
+
+                # 가격 돌파 확인 (최근 종가 > 이전 10봉 최고가)
+                recent_close = candles[0].get("close", 0)
+                prev_highs = [c.get("high", 0) for c in candles[1:11]]
+                prev_high = max(prev_highs) if prev_highs else 0
+
+                # 돌파 조건: 거래량 3배 이상 + 가격 돌파 + 양봉
+                is_breakout = (
+                    volume_ratio >= 3.0
+                    and recent_close > prev_high > 0
+                    and recent_close > candles[0].get("open", 0)  # 양봉
+                )
+
+                if is_breakout:
+                    stock_name = current.get("stock_name", stock_code)
+                    logger.info(
+                        "🚀 모멘텀 돌파 감지: %s(%s) 거래량=%.1fx 가격돌파=%s→%s",
+                        stock_name, stock_code, volume_ratio,
+                        f"{prev_high:,}", f"{recent_close:,}",
+                    )
+
+                    # ATR 가져오기
+                    atr_value = 0.0
+                    if isinstance(self.strategy, ExpertStrategy):
+                        try:
+                            analysis = self.strategy.full_analysis(
+                                stock_code, stock_name, candles, current)
+                            if analysis.technical:
+                                atr_value = analysis.technical.atr
+                        except Exception:
+                            pass
+
+                    # 돌파 강도 = 거래량 비율 기반 (0.3~0.8)
+                    strength = min(0.8, 0.3 + (volume_ratio - 3.0) * 0.05)
+
+                    self.order_manager.execute_buy(
+                        stock_code, stock_name, current["price"],
+                        f"모멘텀돌파(거래량{volume_ratio:.1f}x,고가돌파)",
+                        strength=strength, atr=atr_value,
+                        per=current.get("per", 0),
+                        pbr=current.get("pbr", 0),
+                    )
+
+                    if not self.order_manager.can_buy():
+                        break
+            except Exception as e:
+                logger.debug("[%s] 모멘텀 스캔 오류: %s", stock_code, e)
 
     def _analyze_and_trade(self, stock_code: str) -> None:
         """종목을 분석하고 매매를 실행한다."""
