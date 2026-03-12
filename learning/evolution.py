@@ -506,7 +506,7 @@ class EvolutionEngine:
         - 익절이 너무 일찍 → 익절 상향
         """
         sells = [t for t in trades if t.get("side") == "SELL"]
-        if len(sells) < 10:
+        if not sells:
             return self.state.risk_params
 
         rp = self.state.risk_params
