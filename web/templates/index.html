@@ -1427,23 +1427,40 @@ body::after {
       </div>
     </div>
 
-    <!-- Manual Buy -->
-    <div class="glass-card gradient-border">
+    <!-- Manual Trading -->
+    <div class="glass-card gradient-border" style="border:1px solid rgba(100,140,255,0.3);">
       <div class="section-header">
         <div class="section-title">
-          <span class="title-icon">&#128176;</span> 수동 매수
+          <span class="title-icon">&#127919;</span> 수동 매매
         </div>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
-        <div style="flex:1;min-width:120px;">
-          <label class="input-label">종목코드</label>
-          <input type="text" class="input" id="manualBuyCode" placeholder="예: 005930" maxlength="6">
+
+      <!-- 수동 매수 -->
+      <div style="margin-bottom:16px;">
+        <div style="font-size:14px;font-weight:600;color:var(--accent-cyan);margin-bottom:8px;">매수 주문</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+          <div style="flex:1;min-width:100px;">
+            <label class="input-label">종목코드</label>
+            <input type="text" class="input" id="manualBuyCode" placeholder="예: 005930" maxlength="6">
+          </div>
+          <div style="flex:1;min-width:100px;">
+            <label class="input-label">매수금액 (원)</label>
+            <input type="number" class="input" id="manualBuyAmount" placeholder="미입력시 최대매수금액">
+          </div>
+          <button class="btn btn-primary" onclick="manualBuy()" id="btnManualBuy" style="height:42px;min-width:90px;">매수</button>
         </div>
-        <div style="flex:1;min-width:120px;">
-          <label class="input-label">매수금액 (원)</label>
-          <input type="number" class="input" id="manualBuyAmount" placeholder="미입력시 최대매수금액">
+      </div>
+
+      <!-- 수동 매도 -->
+      <div>
+        <div style="font-size:14px;font-weight:600;color:#ff4d6a;margin-bottom:8px;">매도 주문 (전량 시장가)</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+          <div style="flex:1;min-width:100px;">
+            <label class="input-label">종목코드</label>
+            <input type="text" class="input" id="manualSellCode" placeholder="예: 005930" maxlength="6">
+          </div>
+          <button class="btn-sell" onclick="manualSellByCode()" id="btnManualSell" style="height:42px;min-width:90px;padding:8px 16px;font-size:14px;">매도</button>
         </div>
-        <button class="btn btn-primary" onclick="manualBuy()" id="btnManualBuy" style="height:42px;">매수 주문</button>
       </div>
     </div>
 
@@ -2009,6 +2026,36 @@ body::after {
         return;
       }
       showToast(d.message, 'success');
+      setTimeout(function() { window.refreshDashboard(); }, 1500);
+    }).catch(function(e) {
+      showToast('매도 실패: ' + e.message, 'error');
+    });
+  };
+
+  window.manualSellByCode = function() {
+    var code = $('manualSellCode').value.trim();
+    if (!code) {
+      showToast('종목코드를 입력하세요', 'error');
+      return;
+    }
+    if (code.length !== 6 || !/^\d{6}$/.test(code)) {
+      showToast('종목코드는 6자리 숫자입니다', 'error');
+      return;
+    }
+    if (!confirm(code + ' 종목을 전량 시장가 매도하시겠습니까?')) return;
+
+    showToast('매도 주문 중...', 'info');
+    fetch('/api/trade/manual-sell', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stock_code: code })
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.error) {
+        showToast(d.error, 'error');
+        return;
+      }
+      showToast(d.message, 'success');
+      $('manualSellCode').value = '';
       setTimeout(function() { window.refreshDashboard(); }, 1500);
     }).catch(function(e) {
       showToast('매도 실패: ' + e.message, 'error');
