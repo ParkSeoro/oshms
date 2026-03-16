@@ -457,6 +457,45 @@ class OshmsApp:
         self.holdings_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         tree_sb.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # 보유 종목 우클릭 → 강제 매도
+        self.holdings_tree.bind("<Button-3>", self._on_holdings_right_click)
+        self.holdings_tree.bind("<Double-1>", self._on_holdings_double_click)
+
+        # ── 수동 매매 ──
+        self._section_header(inner, "수동 매매")
+        manual_card = self._make_card(inner, padx=22, pady=16)
+        manual_card.pack(fill=tk.X, padx=28, pady=(0, 4))
+
+        # 매수 행
+        buy_row = tk.Frame(manual_card, bg=c["card"])
+        buy_row.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(buy_row, text="매수", font=(self.FONT, 10, "bold"),
+                 bg=c["card"], fg=c["green"]).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(buy_row, text="종목코드", font=(self.FONT, 9),
+                 bg=c["card"], fg=c["dim"]).pack(side=tk.LEFT, padx=(0, 4))
+        self.manual_buy_code = self._make_entry(buy_row, width=8)
+        self.manual_buy_code.pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(buy_row, text="금액(원)", font=(self.FONT, 9),
+                 bg=c["card"], fg=c["dim"]).pack(side=tk.LEFT, padx=(0, 4))
+        self.manual_buy_amount = self._make_entry(buy_row, width=10)
+        self.manual_buy_amount.pack(side=tk.LEFT, padx=(0, 10))
+        self._make_button(buy_row, "  매수 주문  ", self._manual_buy,
+                          color=c["green"]).pack(side=tk.LEFT)
+
+        # 매도 행
+        sell_row = tk.Frame(manual_card, bg=c["card"])
+        sell_row.pack(fill=tk.X)
+        tk.Label(sell_row, text="매도", font=(self.FONT, 10, "bold"),
+                 bg=c["card"], fg=c["red"]).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(sell_row, text="종목코드", font=(self.FONT, 9),
+                 bg=c["card"], fg=c["dim"]).pack(side=tk.LEFT, padx=(0, 4))
+        self.manual_sell_code = self._make_entry(sell_row, width=8)
+        self.manual_sell_code.pack(side=tk.LEFT, padx=(0, 10))
+        self._make_button(sell_row, "  전량 매도  ", self._manual_sell,
+                          color=c["red"]).pack(side=tk.LEFT)
+        tk.Label(sell_row, text="  ※ 보유 종목 더블클릭/우클릭으로도 매도 가능",
+                 font=(self.FONT, 8), bg=c["card"], fg=c["dim2"]).pack(side=tk.LEFT, padx=8)
+
         # ── 최근 거래 ──
         self._section_header(inner, "최근 거래")
         trade_cols = ("시간", "종목", "매매", "수량", "가격", "손익")
@@ -1815,6 +1854,171 @@ class OshmsApp:
             self._refresh_balance()
         if self._is_trading:
             self._auto_refresh_id = self.root.after(30000, self._auto_refresh)
+
+    # ═══════════════════════════════════════════════
+    # 수동 매매
+    # ═══════════════════════════════════════════════
+
+    def _on_holdings_right_click(self, event):
+        """보유 종목 우클릭 → 강제 매도."""
+        item = self.holdings_tree.identify_row(event.y)
+        if not item:
+            return
+        self.holdings_tree.selection_set(item)
+        values = self.holdings_tree.item(item, "values")
+        if not values:
+            return
+        menu = tk.Menu(self.root, tearoff=0,
+                       bg=self.c["surface"], fg=self.c["fg"],
+                       activebackground=self.c["red"], activeforeground="#fff",
+                       font=(self.FONT, 10))
+        stock_name = values[0]
+        menu.add_command(label=f"  {stock_name} 전량 매도  ",
+                         command=lambda: self._sell_holding_by_name(stock_name))
+        menu.post(event.x_root, event.y_root)
+
+    def _on_holdings_double_click(self, event):
+        """보유 종목 더블클릭 → 강제 매도 확인."""
+        item = self.holdings_tree.identify_row(event.y)
+        if not item:
+            return
+        values = self.holdings_tree.item(item, "values")
+        if not values:
+            return
+        self._sell_holding_by_name(values[0])
+
+    def _sell_holding_by_name(self, stock_name):
+        """종목명으로 보유 종목을 찾아서 매도한다."""
+        # 마지막 잔고에서 종목코드 찾기
+        code = self._find_stock_code_by_name(stock_name)
+        if not code:
+            messagebox.showwarning("매도 실패", f"'{stock_name}' 종목코드를 찾을 수 없습니다.")
+            return
+        self.manual_sell_code.delete(0, tk.END)
+        self.manual_sell_code.insert(0, code)
+        self._manual_sell()
+
+    def _find_stock_code_by_name(self, name):
+        """최근 잔고에서 종목명으로 코드를 찾는다."""
+        try:
+            from api.kis_api import KISApi
+            api = KISApi(self.settings)
+            balance = api.get_balance()
+            for h in balance.get("holdings", []):
+                if h.get("stock_name") == name:
+                    return h["stock_code"]
+        except Exception:
+            pass
+        return None
+
+    def _manual_buy(self):
+        """수동 매수 실행."""
+        code = self.manual_buy_code.get().strip()
+        amount_str = self.manual_buy_amount.get().strip()
+
+        if not code:
+            messagebox.showwarning("매수", "종목코드를 입력하세요.")
+            return
+        if len(code) != 6 or not code.isdigit():
+            messagebox.showwarning("매수", "종목코드는 6자리 숫자입니다.\n예: 005930 (삼성전자)")
+            return
+
+        amount = int(amount_str) if amount_str.isdigit() else 0
+
+        if not messagebox.askyesno("매수 확인",
+                                    f"종목코드: {code}\n"
+                                    f"매수금액: {f'{amount:,}원' if amount > 0 else '최대매수금액'}\n\n"
+                                    f"시장가로 매수하시겠습니까?"):
+            return
+
+        def _do_buy():
+            try:
+                from api.kis_api import KISApi
+                api = KISApi(self.settings)
+
+                price_data = api.get_current_price(code)
+                if not price_data or not price_data.get("price"):
+                    self.root.after(0, lambda: messagebox.showerror(
+                        "매수 실패", f"{code} 시세 조회 실패\n종목코드를 확인하세요."))
+                    return
+
+                price = price_data["price"]
+                stock_name = price_data.get("stock_name", code)
+                buy_amount = amount if amount > 0 else self.settings.max_buy_amount
+                quantity = buy_amount // price
+                if quantity <= 0:
+                    self.root.after(0, lambda: messagebox.showerror(
+                        "매수 실패", f"매수 수량 0\n가격: {price:,}원, 금액: {buy_amount:,}원"))
+                    return
+
+                result = api.buy_market_order(code, quantity)
+                if result["success"]:
+                    msg = f"{stock_name} {quantity}주 매수 완료\n({price:,}원 × {quantity}주 = {price*quantity:,}원)"
+                    self.root.after(0, lambda: (
+                        messagebox.showinfo("매수 완료", msg),
+                        self.manual_buy_code.delete(0, tk.END),
+                        self.manual_buy_amount.delete(0, tk.END),
+                        self._refresh_balance(),
+                    ))
+                else:
+                    err = result.get("message", "알 수 없는 오류")
+                    self.root.after(0, lambda: messagebox.showerror("매수 실패", err))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("매수 오류", str(e)))
+
+        threading.Thread(target=_do_buy, daemon=True).start()
+
+    def _manual_sell(self):
+        """수동 매도 실행 (전량 시장가)."""
+        code = self.manual_sell_code.get().strip()
+
+        if not code:
+            messagebox.showwarning("매도", "종목코드를 입력하세요.")
+            return
+        if len(code) != 6 or not code.isdigit():
+            messagebox.showwarning("매도", "종목코드는 6자리 숫자입니다.")
+            return
+
+        if not messagebox.askyesno("매도 확인",
+                                    f"종목코드: {code}\n\n"
+                                    f"전량 시장가로 매도하시겠습니까?"):
+            return
+
+        def _do_sell():
+            try:
+                from api.kis_api import KISApi
+                api = KISApi(self.settings)
+                balance = api.get_balance()
+
+                holding = None
+                for h in balance.get("holdings", []):
+                    if h["stock_code"] == code:
+                        holding = h
+                        break
+
+                if not holding:
+                    self.root.after(0, lambda: messagebox.showerror(
+                        "매도 실패", f"{code} 종목을 보유하고 있지 않습니다."))
+                    return
+
+                quantity = holding["quantity"]
+                stock_name = holding.get("stock_name", code)
+
+                result = api.sell_market_order(code, quantity)
+                if result["success"]:
+                    msg = f"{stock_name} {quantity}주 매도 완료"
+                    self.root.after(0, lambda: (
+                        messagebox.showinfo("매도 완료", msg),
+                        self.manual_sell_code.delete(0, tk.END),
+                        self._refresh_balance(),
+                    ))
+                else:
+                    err = result.get("message", "알 수 없는 오류")
+                    self.root.after(0, lambda: messagebox.showerror("매도 실패", err))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("매도 오류", str(e)))
+
+        threading.Thread(target=_do_sell, daemon=True).start()
 
     # ═══════════════════════════════════════════════
     # 자동매매 액션
