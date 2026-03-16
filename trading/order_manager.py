@@ -130,9 +130,12 @@ class OrderManager:
         return len(self.positions) < self.settings.max_hold_count
 
     def is_sell_worthy(self, stock_code: str) -> tuple[bool, str]:
-        """매도할 만한 수익이 나는지 확인한다 (최소 수익 임계값).
+        """매도할 만한 조건인지 확인한다.
 
-        워렌 버핏 원칙: "잔챙이 수익에 팔지 마라. 큰 물고기를 기다려라."
+        v4.0 소액 빈번 거래 전략:
+        - 수익 나면 즉시 확정 (0.3% 이상)
+        - 손실도 빠르게 손절 (-1.5% 이하)
+        - 최소 보유 3분 (급등매수 직후 되팔기 방지)
 
         Returns:
             (매도 가능 여부, 사유)
@@ -144,47 +147,44 @@ class OrderManager:
         profit_pct = pos.profit_rate
         profit_krw = pos.profit_loss
 
-        # v3.2: 마이너스 수익률에서는 절대 매도하지 않는다
-        # 매수한 이유가 있으므로 반등을 기다린다
-        if profit_pct <= 0:
-            return False, f"마이너스 수익률 ({profit_pct:.2f}%) — 반등 대기"
-
-        # 최소 보유 시간 확인 (30분)
+        # 최소 보유 시간 확인 (3분 — 시세 안정화)
         try:
             buy_time = datetime.strptime(pos.buy_time, "%H:%M:%S")
             now_time = datetime.now().replace(
                 hour=buy_time.hour, minute=buy_time.minute, second=buy_time.second)
             elapsed = (datetime.now() - now_time).total_seconds()
-            if 0 < elapsed < self.MIN_HOLD_SECONDS and profit_pct < 5.0:
+            if 0 < elapsed < self.MIN_HOLD_SECONDS:
                 return False, f"최소 보유시간 미달 ({elapsed:.0f}초/{self.MIN_HOLD_SECONDS}초)"
         except (ValueError, TypeError):
             pass
 
-        # 수익 중일 때: 최소 수익 임계값 확인
-        if profit_pct < self.MIN_SELL_PROFIT_PCT:
-            return False, f"수익률 부족 ({profit_pct:.2f}% < {self.MIN_SELL_PROFIT_PCT}%)"
-        if profit_krw < self.MIN_SELL_PROFIT_KRW:
+        # v4.0: 손실 종목도 손절선 이하면 빠르게 정리
+        if profit_pct <= self.QUICK_STOP_LOSS_PCT:
+            return True, f"빠른 손절 ({profit_pct:.2f}%)"
+
+        # 수익 중: 아주 작은 수익이라도 확정
+        if profit_pct >= self.MIN_SELL_PROFIT_PCT and profit_krw >= self.MIN_SELL_PROFIT_KRW:
+            return True, "매도 가능"
+
+        if profit_pct >= self.MIN_SELL_PROFIT_PCT:
             return False, f"수익금 부족 ({profit_krw:,}원 < {self.MIN_SELL_PROFIT_KRW:,}원)"
 
-        return True, "매도 가능"
+        return False, f"수익률 부족 ({profit_pct:.2f}% < {self.MIN_SELL_PROFIT_PCT}%)"
 
-    # 매도 시 최소 수익 기준 — v3.2: 임계값 대폭 하향 (수익 확정 빈도 ↑)
-    MIN_SELL_PROFIT_PCT = 0.5    # 최소 0.5% 이상 수익 (v3.2: 2%→0.5% 소폭 수익도 확정)
-    MIN_SELL_PROFIT_KRW = 1000   # 최소 1,000원 이상 수익 (v3.2: 3000→1000원)
-    MIN_HOLD_SECONDS = 600       # 최소 10분 보유 후 매도 (v3.2: 30분→10분 빠른 회전)
+    # v4.0: 소액 빈번 거래 전략 — 적은 수익이라도 자주 확정
+    MIN_SELL_PROFIT_PCT = 0.3    # 최소 0.3% 이상 수익이면 매도 (v4.0: 0.5%→0.3%)
+    MIN_SELL_PROFIT_KRW = 500    # 최소 500원 이상 수익 (v4.0: 1000→500원)
+    MIN_HOLD_SECONDS = 180       # 최소 3분 보유 후 매도 (v4.0: 10분→3분 빠른 회전)
+    QUICK_STOP_LOSS_PCT = -1.5   # 빠른 손절: -1.5% 이하면 즉시 매도
 
     def calc_buy_quantity(self, price: int, strength: float = 1.0,
                           per: float = 0, pbr: float = 0,
                           size_mult: float = 1.0) -> int:
-        """매수 수량을 계산한다 (버핏식 집중투자).
+        """매수 수량을 계산한다 (v4.0: 균등 분산 투자).
 
-        신호 강도 + 가치 평가에 따라 투자 금액을 조절한다.
-        - 강한 신호 + 저평가(PER<12, PBR<1.5): 최대 금액의 100%
-        - 강한 신호 (>0.7): 최대 금액의 90%
-        - 보통 신호 (0.4~0.7): 최대 금액의 70%
-        - 약한 신호 (<0.4): 최대 금액의 55%
-
-        워렌 버핏 원칙: "확신이 있을 때 크게 베팅하라."
+        소액 빈번 거래 전략: 종목당 균등 금액으로 분산 투자.
+        - 최대 보유 종목 수로 균등 분배
+        - 신호 강도에 따라 소폭 조정 (±20%)
 
         Args:
             size_mult: 포트폴리오 최적화 승수 (0.5~1.3, 기본 1.0)
@@ -192,35 +192,23 @@ class OrderManager:
         if price <= 0:
             return 0
 
-        # 1. 기본 투자 비율 (신호 강도 기반: 55% ~ 95%)
-        base_ratio = min(0.95, max(0.55, 0.3 + strength * 0.65))
+        # v4.0: 균등 분배 기반 (집중 투자 → 분산 투자)
+        # max_buy_amount를 기준으로, 신호 강도에 따라 ±20% 조정
+        strength_adj = 0.8 + strength * 0.4  # 0.8 ~ 1.2
+        invest_ratio = min(1.0, strength_adj)
 
-        # 2. 가치 투자 보너스 (PER/PBR 저평가 시 비율 상향)
-        value_bonus = 0.0
-        if 0 < per < 12:
-            value_bonus += 0.03  # 저PER 보너스
-        if 0 < pbr < 1.5:
-            value_bonus += 0.02  # 저PBR 보너스
-
-        invest_ratio = min(1.0, base_ratio + value_bonus)
-
-        # 3. 포트폴리오 최적화 승수 적용
+        # 포트폴리오 최적화 승수 적용
         invest_ratio *= max(0.5, min(1.3, size_mult))
 
         effective_amount = int(self.settings.max_buy_amount * min(1.0, invest_ratio))
         quantity = effective_amount // price
 
-        # 3. 최소 수량 보장: 수익이 의미 있으려면 최소 금액 이상 투자
-        #    수익률 3%일 때 최소 3,000원 이상 수익이 나도록 → 최소 100,000원 투자
+        # 최소 수량 보장: 0.3% 수익이면 최소 500원 이상 → 최소 약 170,000원 투자
         min_invest = 100_000
         if quantity * price < min_invest and price > 0:
             min_qty = min_invest // price
             if min_qty > 0 and min_qty * price <= self.settings.max_buy_amount:
                 quantity = min_qty
-                logger.info(
-                    "최소 투자금액 보장: %d주 → %d주 (%s원)",
-                    effective_amount // price, quantity, f"{quantity * price:,}",
-                )
 
         return quantity
 
@@ -351,19 +339,18 @@ class OrderManager:
     def check_take_profit(self) -> list[str]:
         """익절 조건을 확인하여 매도 대상 종목을 반환한다.
 
-        v2.7: 익절 기준 대폭 상향 — 목표가 기반 매도가 주 매도 메커니즘이므로
-        여기서는 극단적 과열 상황(20%+)에서만 강제 익절한다.
-        ATR 기반 동적 익절은 최소 15%에서 적용.
+        v4.0: 소액 빈번 거래 — 3% 이상이면 확정 익절.
+        ATR 기반 동적 익절은 최소 2%에서 적용.
         """
         targets = []
         for code, pos in self.positions.items():
-            # ATR 기반 동적 익절 (상향 조정)
+            # ATR 기반 동적 익절 (소액 전략에 맞게 하향)
             if pos.atr_at_buy > 0 and pos.avg_price > 0:
-                dynamic_take_pct = pos.atr_at_buy * 8 / pos.avg_price * 100
-                # 최소 15%, 최대 30%
-                take_pct = max(15.0, min(30.0, dynamic_take_pct))
+                dynamic_take_pct = pos.atr_at_buy * 3 / pos.avg_price * 100
+                # 최소 2%, 최대 8%
+                take_pct = max(2.0, min(8.0, dynamic_take_pct))
             else:
-                take_pct = 20.0  # 기본 20% (기존 5% → 상향)
+                take_pct = 3.0  # 기본 3% (v4.0: 20% → 3% 빠른 익절)
 
             if pos.profit_rate >= take_pct:
                 targets.append(code)
@@ -373,14 +360,13 @@ class OrderManager:
                 )
         return targets
 
-    def check_trailing_stop(self, trail_pct: float = 3.0) -> list[str]:
+    def check_trailing_stop(self, trail_pct: float = 1.5) -> list[str]:
         """트레일링 스탑 조건을 확인한다.
 
-        수익률 구간별 차등 적용 (v2.7: 더 여유롭게 — 큰 수익 추구):
-        - 수익 1~5%:   최고가 대비 3% 하락 시 매도
-        - 수익 5~10%:  최고가 대비 5% 하락 시 매도
-        - 수익 10~20%: 최고가 대비 7% 하락 시 매도
-        - 수익 20%+:   최고가 대비 10% 하락 시 매도 (대형 수익 극대화)
+        v4.0 소액 빈번 거래: 타이트한 트레일링으로 수익 보호
+        - 수익 0.3~2%:  최고가 대비 1.5% 하락 시 매도 (소액 수익 보호)
+        - 수익 2~5%:    최고가 대비 2% 하락 시 매도
+        - 수익 5%+:     최고가 대비 3% 하락 시 매도
         """
         targets = []
         for code, pos in self.positions.items():
@@ -389,15 +375,13 @@ class OrderManager:
             if pos.profit_rate <= 0:
                 continue  # 수익 중인 종목만
 
-            # 수익률 구간별 트레일링 퍼센트 조정 (여유롭게)
-            if pos.profit_rate >= 20.0:
-                effective_trail = 10.0
-            elif pos.profit_rate >= 10.0:
-                effective_trail = 7.0
-            elif pos.profit_rate >= 5.0:
-                effective_trail = 5.0
+            # v4.0: 타이트한 트레일링 (소액 수익 보호)
+            if pos.profit_rate >= 5.0:
+                effective_trail = 3.0
+            elif pos.profit_rate >= 2.0:
+                effective_trail = 2.0
             else:
-                effective_trail = trail_pct  # 기본 3.0%
+                effective_trail = trail_pct  # 기본 1.5%
 
             drop_from_high = ((pos.highest_price - pos.current_price) / pos.highest_price) * 100
             if drop_from_high >= effective_trail:
