@@ -1602,8 +1602,8 @@ class OshmsApp:
         except Exception:
             pass
 
-        self._load_trade_history()
-        self._update_cumulative_stats()
+        # 무거운 파일 I/O를 백그라운드에서 처리
+        threading.Thread(target=self._bg_update_stats, daemon=True).start()
 
     def _update_cumulative_stats(self):
         """누적 통계를 계산한다. trades.json + StateManager 병합."""
@@ -1860,10 +1860,216 @@ class OshmsApp:
                 f"{h['profit_rate']:+.2f}%",
                 target_str, upside_str))
 
-        self._load_trade_history()
-        self._load_evolution_details()
-        self._load_code_evolution_details()
-        self._update_cumulative_stats()
+        # 파일 I/O 작업을 백그라운드에서 처리 (UI 응답없음 방지)
+        threading.Thread(target=self._bg_update_stats, daemon=True).start()
+
+    def _bg_update_stats(self):
+        """백그라운드 스레드에서 파일 I/O 후 UI 갱신을 예약한다."""
+        try:
+            # ── 거래 내역 (trades.json) ──
+            trade_rows = []
+            today_count = 0
+            trade_file = Path("logs/trades.json")
+            if trade_file.exists():
+                data = json.loads(trade_file.read_text(encoding="utf-8"))
+                from datetime import datetime
+                today = datetime.now().strftime("%Y-%m-%d")
+                for t in data[-30:]:
+                    ts = t.get("timestamp", "")[:16]
+                    trade_rows.append((
+                        ts, t.get("stock_name", ""), t.get("side", ""),
+                        t.get("quantity", 0), f"{t.get('price', 0):,}",
+                        f"{t.get('profit_loss', 0):+,}" if t.get("side") == "SELL" else "-",
+                    ))
+                    if ts.startswith(today):
+                        today_count += 1
+
+                # 누적 통계 계산
+                sells = [t for t in data if t.get("side") == "SELL"]
+                total_sells = len(sells)
+                wins = sum(1 for t in sells if t.get("profit_loss", 0) > 0)
+                total_profit = sum(t.get("profit_loss", 0) for t in sells)
+                profits = [t.get("profit_loss", 0) for t in sells]
+                best = max(profits) if profits else 0
+                win_rate = (wins / total_sells * 100) if total_sells > 0 else 0
+            else:
+                total_sells = wins = 0
+                total_profit = best = 0
+                win_rate = 0.0
+
+            # StateManager 병합
+            try:
+                from trading.state_manager import StateManager
+                sm = StateManager()
+                stats = sm.get_stats_summary()
+                if stats.get("total_trades", 0) > total_sells:
+                    total_sells = stats["total_trades"]
+                    win_rate = stats.get("win_rate", win_rate)
+                    total_profit = stats.get("total_profit", total_profit)
+            except Exception:
+                pass
+
+            cum_stats = {
+                "total_sells": total_sells, "win_rate": win_rate,
+                "total_profit": total_profit, "best": best,
+            }
+
+            # ── 진화 상태 ──
+            evo_gen = 0
+            evo_best_fit = 0
+            evo_text = ""
+            evo_file = Path("data/evolution_state.json")
+            if evo_file.exists():
+                try:
+                    evo_data = json.loads(evo_file.read_text(encoding="utf-8"))
+                    evo_gen = evo_data.get("generation", 0)
+                    evo_best_fit = evo_data.get("best_fitness", 0)
+                    evo_text = self._format_evolution_text(evo_data)
+                except Exception:
+                    evo_text = "진화 상태 로드 실패"
+
+            # ── 코드 진화 상태 ──
+            code_evo_text = ""
+            code_evo_file = Path("data/code_evolution_state.json")
+            if code_evo_file.exists():
+                try:
+                    code_data = json.loads(code_evo_file.read_text(encoding="utf-8"))
+                    code_evo_text = self._format_code_evolution_text(code_data)
+                except Exception:
+                    code_evo_text = "코드 진화 상태 로드 실패"
+
+            # 메인 스레드에서 UI 갱신
+            self.root.after(0, lambda: self._apply_stats_to_ui(
+                trade_rows, today_count, cum_stats,
+                evo_gen, evo_best_fit, evo_text, code_evo_text))
+        except Exception:
+            pass
+
+    def _apply_stats_to_ui(self, trade_rows, today_count, cum,
+                           evo_gen, evo_best_fit, evo_text, code_evo_text):
+        """메인 스레드: 미리 계산된 데이터로 UI만 갱신."""
+        c = self.c
+
+        # 거래 내역 갱신
+        for item in self.trades_tree.get_children():
+            self.trades_tree.delete(item)
+        for row in trade_rows:
+            self.trades_tree.insert("", 0, values=row)
+        self.card_labels["today_trades"].config(text=f"{today_count} 건")
+
+        # 누적 통계
+        self.stat_labels["cum_trades"].config(text=f"{cum['total_sells']} 건")
+        self.stat_labels["cum_wins"].config(
+            text=f"{cum['win_rate']:.1f}%",
+            fg=c["green"] if cum["win_rate"] >= 50 else c["red"])
+        self.stat_labels["cum_profit"].config(
+            text=f"{cum['total_profit']:+,.0f} 원",
+            fg=c["green"] if cum["total_profit"] >= 0 else c["red"])
+        self.stat_labels["best_trade"].config(
+            text=f"{cum['best']:+,.0f} 원")
+
+        # 진화 세대
+        self.stat_labels["evo_gen"].config(text=f"#{evo_gen}")
+        if evo_gen > 0:
+            self.evo_label.config(text=f"진화 #{evo_gen}  적합도 {evo_best_fit:.0f}")
+        else:
+            self.evo_label.config(text="진화 #0  대기")
+
+        # 진화 엔진 상세
+        if evo_text:
+            self.evo_detail_text.configure(state=tk.NORMAL)
+            self.evo_detail_text.delete("1.0", tk.END)
+            self.evo_detail_text.insert(tk.END, evo_text)
+            self.evo_detail_text.configure(state=tk.DISABLED)
+
+        # 코드 진화 상세
+        if code_evo_text:
+            self.code_evo_text.configure(state=tk.NORMAL)
+            self.code_evo_text.delete("1.0", tk.END)
+            self.code_evo_text.insert(tk.END, code_evo_text)
+            self.code_evo_text.configure(state=tk.DISABLED)
+
+    def _format_evolution_text(self, data) -> str:
+        """진화 엔진 텍스트를 포맷한다 (스레드 안전)."""
+        gen = data.get("generation", 0)
+        best = data.get("best_fitness", 0)
+        best_gen = data.get("best_generation", 0)
+        last = data.get("last_evolution", "없음")
+        rules = data.get("active_rules", [])
+        fh = data.get("fitness_history", [])
+        wh = data.get("weight_history", [])
+
+        txt = f"세대: #{gen}  |  최고 적합도: {best:.1f} (#{best_gen})  |  마지막: {last}\n"
+        txt += f"활성 규칙: {len(rules)}개  |  가중치 조정 이력: {len(wh)}건\n\n"
+
+        if fh:
+            recent = fh[-5:]
+            txt += "최근 적합도 추이:\n"
+            for f in recent:
+                bar_len = int(f["fitness"] / 5)
+                bar = "█" * bar_len + "░" * (20 - bar_len)
+                txt += f"  #{f['generation']:3d}  {bar}  {f['fitness']:5.1f}\n"
+
+        if rules:
+            txt += f"\n활성 규칙 ({len(rules)}개):\n"
+            for r in rules[:5]:
+                conf = r.get("confidence", 0)
+                txt += f"  [{r.get('type','')}] {r.get('action','')} (신뢰도: {conf:.0%})\n"
+            if len(rules) > 5:
+                txt += f"  ... 외 {len(rules) - 5}개\n"
+        return txt
+
+    def _format_code_evolution_text(self, data) -> str:
+        """코드 자체 진화 텍스트를 포맷한다 (스레드 안전)."""
+        cycle = data.get("cycle", 0)
+        improvements = data.get("total_improvements", 0)
+        rollbacks = data.get("total_rollbacks", 0)
+        last = data.get("last_cycle", "없음")
+        diag = data.get("last_diagnosis", {})
+        score = diag.get("overall_score", 0)
+        roadmap = data.get("roadmap", [])
+        applied = data.get("applied_modules", [])
+        perf = data.get("performance_history", [])
+
+        txt = f"사이클: #{cycle}  |  개선: {improvements}건  |  롤백: {rollbacks}건  |  마지막: {last}\n"
+        txt += f"시스템 점수: {score:.1f}/100\n\n"
+
+        if perf:
+            recent = perf[-5:]
+            txt += "성능 추이:\n"
+            for p in recent:
+                s = p.get("score", 0)
+                bar_len = int(min(s, 100) / 5)
+                bar = "█" * bar_len + "░" * (20 - bar_len)
+                txt += f"  #{p.get('cycle', 0):3d}  {bar}  {s:5.1f}\n"
+            txt += "\n"
+
+        weaknesses = diag.get("weaknesses", [])
+        if weaknesses:
+            txt += f"발견된 약점 ({len(weaknesses)}개):\n"
+            for w in weaknesses[:5]:
+                sev_icon = {"critical": "!!", "high": "! ", "medium": "- ", "low": "  "}.get(
+                    w.get("severity", ""), "  ")
+                txt += f"  {sev_icon}{w.get('detail', '')}\n"
+            txt += "\n"
+
+        active_roadmap = sorted(roadmap, key=lambda m: m.get("priority", 0), reverse=True)
+        if active_roadmap:
+            txt += "자율 개발 로드맵:\n"
+            for m in active_roadmap[:6]:
+                status_icon = {"pending": "◻", "cooldown": "⏳", "applied": "✓"}.get(
+                    m.get("status", ""), "◻")
+                pri = m.get("priority", 0)
+                txt += f"  {status_icon} [{pri:4.1f}] {m.get('name', '')}\n"
+            if len(active_roadmap) > 6:
+                txt += f"  ... 외 {len(active_roadmap) - 6}개\n"
+            txt += "\n"
+
+        if applied:
+            txt += f"최근 적용 ({len(applied)}건):\n"
+            for a in applied[-3:]:
+                txt += f"  #{a.get('cycle', 0)} {a.get('module_id', '')} — {a.get('reason', '')}\n"
+        return txt
 
     def _auto_refresh(self):
         if self._is_trading and self.auto_refresh_var.get():
