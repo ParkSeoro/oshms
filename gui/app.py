@@ -1606,51 +1606,67 @@ class OshmsApp:
         self._update_cumulative_stats()
 
     def _update_cumulative_stats(self):
-        """logs/trades.json에서 누적 통계를 직접 계산."""
+        """누적 통계를 계산한다. trades.json + StateManager 병합."""
+        total_sells = 0
+        wins = 0
+        total_profit = 0
+        best = 0
+        win_rate = 0.0
+
+        # 1차: trades.json에서 직접 계산
         trade_file = Path("logs/trades.json")
-        if not trade_file.exists():
-            return
+        if trade_file.exists():
+            try:
+                data = json.loads(trade_file.read_text(encoding="utf-8"))
+                sells = [t for t in data if t.get("side") == "SELL"]
+                if sells:
+                    total_sells = len(sells)
+                    wins = sum(1 for t in sells if t.get("profit_loss", 0) > 0)
+                    total_profit = sum(t.get("profit_loss", 0) for t in sells)
+                    profits = [t.get("profit_loss", 0) for t in sells]
+                    best = max(profits) if profits else 0
+                    win_rate = (wins / total_sells * 100) if total_sells > 0 else 0
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # 2차: StateManager 누적 통계가 더 정확하면 병합
         try:
-            data = json.loads(trade_file.read_text(encoding="utf-8"))
-            sells = [t for t in data if t.get("side") == "SELL"]
-            if not sells:
-                return
-
-            total_sells = len(sells)
-            wins = sum(1 for t in sells if t.get("profit_loss", 0) > 0)
-            total_profit = sum(t.get("profit_loss", 0) for t in sells)
-            profits = [t.get("profit_loss", 0) for t in sells]
-            best = max(profits) if profits else 0
-            win_rate = (wins / total_sells * 100) if total_sells > 0 else 0
-
-            c = self.c
-            self.stat_labels["cum_trades"].config(text=f"{total_sells} 건")
-            self.stat_labels["cum_wins"].config(
-                text=f"{win_rate:.1f}%",
-                fg=c["green"] if win_rate >= 50 else c["red"])
-            self.stat_labels["cum_profit"].config(
-                text=f"{total_profit:+,.0f} 원",
-                fg=c["green"] if total_profit >= 0 else c["red"])
-            self.stat_labels["best_trade"].config(
-                text=f"{best:+,.0f} 원")
-
-            # 진화 세대 표시 (통계 카드 + 헤더 동시 갱신)
-            evo_file = Path("data/evolution_state.json")
-            if evo_file.exists():
-                try:
-                    evo = json.loads(evo_file.read_text(encoding="utf-8"))
-                    gen = evo.get("generation", 0)
-                    best = evo.get("best_fitness", 0)
-                    self.stat_labels["evo_gen"].config(text=f"#{gen}")
-                    self.evo_label.config(
-                        text=f"진화 #{gen}  적합도 {best:.0f}")
-                except Exception:
-                    pass
-            else:
-                self.stat_labels["evo_gen"].config(text="#0")
-                self.evo_label.config(text="진화 #0  대기")
-        except (json.JSONDecodeError, OSError):
+            from trading.state_manager import StateManager
+            sm = StateManager()
+            stats = sm.get_stats_summary()
+            if stats.get("total_trades", 0) > total_sells:
+                total_sells = stats["total_trades"]
+                win_rate = stats.get("win_rate", win_rate)
+                total_profit = stats.get("total_profit", total_profit)
+        except Exception:
             pass
+
+        c = self.c
+        self.stat_labels["cum_trades"].config(text=f"{total_sells} 건")
+        self.stat_labels["cum_wins"].config(
+            text=f"{win_rate:.1f}%",
+            fg=c["green"] if win_rate >= 50 else c["red"])
+        self.stat_labels["cum_profit"].config(
+            text=f"{total_profit:+,.0f} 원",
+            fg=c["green"] if total_profit >= 0 else c["red"])
+        self.stat_labels["best_trade"].config(
+            text=f"{best:+,.0f} 원")
+
+        # 진화 세대 표시 (통계 카드 + 헤더 동시 갱신)
+        evo_file = Path("data/evolution_state.json")
+        if evo_file.exists():
+            try:
+                evo = json.loads(evo_file.read_text(encoding="utf-8"))
+                gen = evo.get("generation", 0)
+                best_fit = evo.get("best_fitness", 0)
+                self.stat_labels["evo_gen"].config(text=f"#{gen}")
+                self.evo_label.config(
+                    text=f"진화 #{gen}  적합도 {best_fit:.0f}")
+            except Exception:
+                pass
+        else:
+            self.stat_labels["evo_gen"].config(text="#0")
+            self.evo_label.config(text="진화 #0  대기")
 
     def _load_trade_history(self):
         trade_file = Path("logs/trades.json")
