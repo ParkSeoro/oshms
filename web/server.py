@@ -280,6 +280,131 @@ def api_save_settings():
     return jsonify({"message": "저장 완료"})
 
 
+@app.route("/api/trade/manual-sell", methods=["POST"])
+def api_manual_sell():
+    """보유 종목을 시장가로 강제 매도한다."""
+    data = request.json or {}
+    stock_code = data.get("stock_code", "").strip()
+    if not stock_code:
+        return jsonify({"error": "종목코드를 입력하세요"}), 400
+
+    try:
+        from api.kis_api import KISApi
+        s = _get_settings()
+        api = KISApi(s)
+        balance = api.get_balance()
+
+        # 보유 종목에서 해당 종목 찾기
+        holding = None
+        for h in balance.get("holdings", []):
+            if h["stock_code"] == stock_code:
+                holding = h
+                break
+
+        if not holding:
+            return jsonify({"error": f"{stock_code} 종목을 보유하고 있지 않습니다"}), 400
+
+        quantity = holding["quantity"]
+        stock_name = holding.get("stock_name", stock_code)
+
+        result = api.sell_market_order(stock_code, quantity)
+        if not result["success"]:
+            return jsonify({"error": f"매도 실패: {result.get('message', '알 수 없는 오류')}"}), 500
+
+        # 거래 기록 저장
+        _log_manual_trade(stock_code, stock_name, "SELL", quantity,
+                          holding.get("current_price", 0), "사용자 강제 매도")
+
+        logger.info("수동 매도 완료: %s(%s) %d주", stock_name, stock_code, quantity)
+        return jsonify({
+            "message": f"{stock_name} {quantity}주 매도 주문 완료",
+            "stock_code": stock_code,
+            "stock_name": stock_name,
+            "quantity": quantity,
+        })
+    except Exception as e:
+        logger.error("수동 매도 오류: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/trade/manual-buy", methods=["POST"])
+def api_manual_buy():
+    """사용자가 지정한 종목을 시장가로 매수한다."""
+    data = request.json or {}
+    stock_code = data.get("stock_code", "").strip()
+    amount = int(data.get("amount", 0))
+
+    if not stock_code:
+        return jsonify({"error": "종목코드를 입력하세요"}), 400
+
+    try:
+        from api.kis_api import KISApi
+        s = _get_settings()
+        api = KISApi(s)
+
+        # 현재가 조회
+        price_data = api.get_current_price(stock_code)
+        if not price_data or not price_data.get("price"):
+            return jsonify({"error": f"{stock_code} 시세 조회 실패 — 종목코드를 확인하세요"}), 400
+
+        price = price_data["price"]
+        stock_name = price_data.get("stock_name", stock_code)
+
+        # 매수 금액 결정: 지정 금액 또는 설정의 최대 매수금액
+        buy_amount = amount if amount > 0 else s.max_buy_amount
+        quantity = buy_amount // price
+        if quantity <= 0:
+            return jsonify({"error": f"매수 수량 0: 가격 {price:,}원, 매수금액 {buy_amount:,}원"}), 400
+
+        result = api.buy_market_order(stock_code, quantity)
+        if not result["success"]:
+            return jsonify({"error": f"매수 실패: {result.get('message', '알 수 없는 오류')}"}), 500
+
+        # 거래 기록 저장
+        _log_manual_trade(stock_code, stock_name, "BUY", quantity, price, "사용자 수동 매수")
+
+        logger.info("수동 매수 완료: %s(%s) %d주 × %s원", stock_name, stock_code, quantity, f"{price:,}")
+        return jsonify({
+            "message": f"{stock_name} {quantity}주 매수 주문 완료 ({price:,}원 × {quantity}주 = {price * quantity:,}원)",
+            "stock_code": stock_code,
+            "stock_name": stock_name,
+            "quantity": quantity,
+            "price": price,
+            "total_amount": price * quantity,
+        })
+    except Exception as e:
+        logger.error("수동 매수 오류: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+def _log_manual_trade(stock_code: str, stock_name: str, side: str,
+                      quantity: int, price: int, reason: str) -> None:
+    """수동 거래를 trades.json에 기록한다."""
+    from datetime import datetime
+    trades_file = Path("logs/trades.json")
+    trades = []
+    if trades_file.exists():
+        try:
+            trades = json.loads(trades_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    trades.append({
+        "stock_code": stock_code,
+        "stock_name": stock_name,
+        "side": side,
+        "quantity": quantity,
+        "price": price,
+        "amount": price * quantity,
+        "reason": reason,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "profit_loss": 0,
+        "profit_rate": 0.0,
+    })
+    trades_file.parent.mkdir(parents=True, exist_ok=True)
+    trades_file.write_text(json.dumps(trades, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 @app.route("/api/report")
 def api_report():
     from analysis.analyzer import ProfitAnalyzer

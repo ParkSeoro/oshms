@@ -635,6 +635,22 @@ body::after {
 }
 .btn-ghost::after { display: none; }
 
+.btn-sell {
+  background: rgba(255,77,106,0.12);
+  color: #ff4d6a;
+  border: 1px solid rgba(255,77,106,0.25);
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-sell:hover {
+  background: rgba(255,77,106,0.25);
+  border-color: rgba(255,77,106,0.4);
+}
+
 .btn-block { width: 100%; }
 
 .btn-group {
@@ -1394,11 +1410,12 @@ body::after {
               <th>현재가</th>
               <th>손익</th>
               <th>수익률</th>
+              <th>매도</th>
             </tr>
           </thead>
           <tbody id="holdingsBody">
             <tr>
-              <td colspan="6">
+              <td colspan="7">
                 <div class="table-empty">
                   <span class="empty-icon">&#128230;</span>
                   새로고침을 눌러 잔고를 조회하세요
@@ -1407,6 +1424,26 @@ body::after {
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- Manual Buy -->
+    <div class="glass-card gradient-border">
+      <div class="section-header">
+        <div class="section-title">
+          <span class="title-icon">&#128176;</span> 수동 매수
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <div style="flex:1;min-width:120px;">
+          <label class="input-label">종목코드</label>
+          <input type="text" class="input" id="manualBuyCode" placeholder="예: 005930" maxlength="6">
+        </div>
+        <div style="flex:1;min-width:120px;">
+          <label class="input-label">매수금액 (원)</label>
+          <input type="number" class="input" id="manualBuyAmount" placeholder="미입력시 최대매수금액">
+        </div>
+        <button class="btn btn-primary" onclick="manualBuy()" id="btnManualBuy" style="height:42px;">매수 주문</button>
       </div>
     </div>
 
@@ -1841,20 +1878,23 @@ body::after {
       /* Holdings table */
       var tbody = $('holdingsBody');
       if (!h.length) {
-        tbody.innerHTML = '<tr><td colspan="6"><div class="table-empty"><span class="empty-icon">&#128230;</span>보유 종목이 없습니다</div></td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7"><div class="table-empty"><span class="empty-icon">&#128230;</span>보유 종목이 없습니다</div></td></tr>';
       } else {
         var rows = '';
         h.forEach(function(item) {
           var itemPL = item.profit_loss || 0;
           var itemRate = item.profit_rate || (item.avg_price ? ((item.current_price - item.avg_price) / item.avg_price * 100) : 0);
           var cls = plClass(itemPL);
+          var code = item.stock_code || '';
+          var name = item.stock_name || code || '--';
           rows += '<tr>' +
-            '<td><strong>' + (item.stock_name || item.stock_code || '--') + '</strong></td>' +
+            '<td><strong>' + name + '</strong></td>' +
             '<td>' + fmt(item.quantity) + '</td>' +
             '<td>' + fmt(item.avg_price) + '</td>' +
             '<td>' + fmt(item.current_price) + '</td>' +
             '<td class="' + cls + '">' + plSign(itemPL) + fmt(itemPL) + '</td>' +
             '<td class="' + cls + '"><span class="tag ' + (itemPL >= 0 ? 'tag-green' : 'tag-red') + '">' + plSign(itemRate) + (typeof itemRate === 'number' ? itemRate.toFixed(2) : itemRate) + '%</span></td>' +
+            '<td><button class="btn-sell" onclick="manualSell(\'' + code + '\', \'' + name.replace(/'/g, "\\'") + '\')" title="강제 매도">매도</button></td>' +
             '</tr>';
         });
         tbody.innerHTML = rows;
@@ -1949,6 +1989,68 @@ body::after {
     fetch('/api/trade/stop', { method: 'POST' }).then(function() {
       showToast('자동매매가 중지되었습니다', 'info');
       appendLog('[SYSTEM] 자동매매 중지');
+    });
+  };
+
+  /* ═══════════════════════════════════
+     Manual Trading (수동 매매)
+     ═══════════════════════════════════ */
+  window.manualSell = function(stockCode, stockName) {
+    if (!confirm(stockName + ' (' + stockCode + ') 전량을 시장가로 매도하시겠습니까?')) return;
+
+    showToast('매도 주문 중...', 'info');
+    fetch('/api/trade/manual-sell', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stock_code: stockCode })
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.error) {
+        showToast(d.error, 'error');
+        return;
+      }
+      showToast(d.message, 'success');
+      setTimeout(function() { window.refreshDashboard(); }, 1500);
+    }).catch(function(e) {
+      showToast('매도 실패: ' + e.message, 'error');
+    });
+  };
+
+  window.manualBuy = function() {
+    var code = $('manualBuyCode').value.trim();
+    var amount = parseInt($('manualBuyAmount').value) || 0;
+
+    if (!code) {
+      showToast('종목코드를 입력하세요', 'error');
+      return;
+    }
+    if (code.length !== 6 || !/^\d{6}$/.test(code)) {
+      showToast('종목코드는 6자리 숫자입니다 (예: 005930)', 'error');
+      return;
+    }
+
+    var msg = code + ' 종목을 시장가로 매수하시겠습니까?';
+    if (amount > 0) msg += '\n매수금액: ' + amount.toLocaleString() + '원';
+    if (!confirm(msg)) return;
+
+    $('btnManualBuy').disabled = true;
+    showToast('매수 주문 중...', 'info');
+    fetch('/api/trade/manual-buy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stock_code: code, amount: amount })
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      $('btnManualBuy').disabled = false;
+      if (d.error) {
+        showToast(d.error, 'error');
+        return;
+      }
+      showToast(d.message, 'success');
+      $('manualBuyCode').value = '';
+      $('manualBuyAmount').value = '';
+      setTimeout(function() { window.refreshDashboard(); }, 1500);
+    }).catch(function(e) {
+      $('btnManualBuy').disabled = false;
+      showToast('매수 실패: ' + e.message, 'error');
     });
   };
 
