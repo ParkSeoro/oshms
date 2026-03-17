@@ -1146,13 +1146,24 @@ class AutoTrader:
                     estimated_upside,
                 )
 
+                # v3.3: 동적 비중 조절 (확신도 + 시장 심리 기반)
+                confidence_mult = 1.0
+                if isinstance(self.strategy, ExpertStrategy) and 'analysis' in dir():
+                    try:
+                        confidence_mult = self.strategy.get_confidence_size_mult(analysis)
+                        if confidence_mult != 1.0:
+                            logger.info("  동적 비중: %.2f (확신도+심리)", confidence_mult)
+                    except Exception:
+                        pass
+                final_size_mult = portfolio_size_mult * confidence_mult
+
                 self.order_manager.execute_buy(
                     stock_code, stock_name, current_price["price"], signal.reason,
                     strength=signal.strength, atr=atr_value,
                     target_price=target_price, estimated_upside=estimated_upside,
                     per=current_price.get("per", 0),
                     pbr=current_price.get("pbr", 0),
-                    size_mult=portfolio_size_mult,
+                    size_mult=final_size_mult,
                 )
 
                 # v3.2: Q-Learning 매수 상태 기록

@@ -123,6 +123,19 @@ class ExpertStrategy(BaseStrategy):
         self._market_ctx: MarketContext | None = None
         self._market_ctx_time: float = 0
 
+        # v3.4: 섹터 모멘텀 로테이션
+        self._sector_analyzer = None
+        if api:
+            try:
+                from analysis.sector import SectorAnalyzer
+                self._sector_analyzer = SectorAnalyzer(api)
+            except Exception:
+                pass
+
+        # v3.3: 시장 심리 지수 (공포/탐욕)
+        self._fear_greed_score: float = 0.0  # -1.0(극공포) ~ +1.0(극탐욕)
+        self._fear_greed_time: float = 0
+
         # 종목별 동적 임계값 프로필
         self._stock_profiles: dict = self._load_stock_profiles()
 
@@ -368,7 +381,20 @@ class ExpertStrategy(BaseStrategy):
         # ── 6. 가격 위치 분석 ──
         result.price_level_score = self._analyze_price_level(tech_snap, result.price)
 
-        # ── 종합 점수 계산 ──
+        # ── v3.3: 시장 심리 지수 갱신 ──
+        fg = self._calc_fear_greed_index()
+        if abs(fg) >= 0.3:
+            label = "탐욕" if fg > 0 else "공포"
+            logger.debug("[%s] 시장 심리: %s (%.2f)", stock_name, label, fg)
+
+        # ── v3.4: 섹터 모멘텀 분석 ──
+        if self._sector_analyzer:
+            try:
+                self._sector_analyzer.update()
+            except Exception:
+                pass
+
+        # ── 종합 점수 계산 (v3.3 심리 + v3.4 섹터 포함) ──
         result.total_score = self._weighted_score(result)
         result.confidence = self._calc_confidence(result)
 
@@ -582,8 +608,100 @@ class ExpertStrategy(BaseStrategy):
 
         return max(-1.0, min(1.0, score))
 
+    # ─────────── v3.3: 시장 심리 지수 (공포/탐욕) ───────────
+
+    def _calc_fear_greed_index(self) -> float:
+        """시장 심리 지수를 계산한다. -1.0(극공포) ~ +1.0(극탐욕).
+
+        구성 요소:
+        - KOSPI/KOSDAQ 등락률 (시장 추세)
+        - 거래대금 변화 (탐욕 = 거래 폭증)
+        - 상승/하락 종목 비율
+        - VIX(변동성) 대용 지표
+        """
+        import time
+        # 10분 캐시
+        if time.time() - self._fear_greed_time < 600 and self._fear_greed_score != 0:
+            return self._fear_greed_score
+
+        score = 0.0
+        components = 0
+
+        if self._market_ctx:
+            m = self._market_ctx
+            # 1. 시장 등락률 (-3% ~ +3% → -1.0 ~ +1.0)
+            change = getattr(m, 'kospi_change', 0)
+            score += max(-1.0, min(1.0, change / 3.0))
+            components += 1
+
+            # 2. 레짐 기반 보정
+            regime = getattr(m, 'regime', '')
+            if regime == 'trending_up':
+                score += 0.3
+            elif regime == 'trending_down':
+                score -= 0.3
+            elif regime == 'volatile':
+                score -= 0.2  # 변동성 = 공포
+            components += 1
+
+            # 3. 거래대금 변화 (있을 경우)
+            volume_change = getattr(m, 'volume_change_pct', 0)
+            if volume_change:
+                # 거래대금 급증 = 탐욕 (50% 이상 증가 → +0.5)
+                score += max(-0.5, min(0.5, volume_change / 100.0))
+                components += 1
+
+            # 4. 시장 점수 직접 사용
+            market_score = getattr(m, 'market_score', 0)
+            score += market_score * 0.5
+            components += 1
+
+        if components > 0:
+            self._fear_greed_score = max(-1.0, min(1.0, score / components * 2))
+        else:
+            self._fear_greed_score = 0.0
+
+        self._fear_greed_time = time.time()
+        return self._fear_greed_score
+
+    # ─────────── v3.4: 섹터 모멘텀 보정 ───────────
+
+    def _get_sector_bias(self, stock_code: str) -> float:
+        """종목의 섹터 모멘텀 보정값. 핫 섹터=양수, 콜드 섹터=음수."""
+        if not self._sector_analyzer:
+            return 0.0
+        try:
+            return self._sector_analyzer.get_sector_bias(stock_code)
+        except Exception:
+            return 0.0
+
+    # ─────────── v3.3: 동적 비중 계산 ───────────
+
+    def get_confidence_size_mult(self, result: 'ExpertAnalysis') -> float:
+        """신뢰도 + 심리 지수 기반 투자 비중 승수 (0.5 ~ 1.5).
+
+        - 높은 확신 + 공포장 = 더 크게 매수 (역발상)
+        - 낮은 확신 + 탐욕장 = 작게 매수 (조심)
+        """
+        confidence = result.confidence
+        fear_greed = self._calc_fear_greed_index()
+
+        # 기본 비중: 확신도 기반 (0.6 ~ 1.2)
+        base = 0.6 + confidence * 0.6
+
+        # 심리 보정: 공포장에 매수하면 비중 ↑ (역발상)
+        if result.total_score > 0:  # 매수 신호일 때
+            if fear_greed < -0.3:
+                # 시장 공포 → 매수 비중 확대 ("남들이 두려워할 때 탐욕")
+                base *= 1.2
+            elif fear_greed > 0.5:
+                # 시장 탐욕 → 매수 비중 축소 (과열 경계)
+                base *= 0.8
+
+        return max(0.5, min(1.5, base))
+
     def _weighted_score(self, result: ExpertAnalysis) -> float:
-        """가중 종합 점수 (버핏 가치투자 + 기술적 분석 융합)."""
+        """가중 종합 점수 (기술+가치+감성+시장+섹터 융합)."""
         w = self.WEIGHTS
         score = (
             result.technical_score * w["technical"]
@@ -593,6 +711,24 @@ class ExpertStrategy(BaseStrategy):
             + result.market_score * w["market"]
             + result.price_level_score * w["price_level"]
         )
+
+        # v3.4: 섹터 모멘텀 보정 (±0.2)
+        sector_bias = self._get_sector_bias(result.stock_code)
+        if sector_bias != 0:
+            score += sector_bias
+            if abs(sector_bias) >= 0.1:
+                result.reasons.append(
+                    f"섹터 {'강세' if sector_bias > 0 else '약세'}({sector_bias:+.2f})")
+
+        # v3.3: 시장 심리 보정
+        fg = self._calc_fear_greed_index()
+        if abs(fg) >= 0.3:
+            # 공포장에서 매수 신호 → 보너스, 탐욕장에서 매수 → 패널티
+            if score > 0 and fg < -0.3:
+                score += 0.03  # 역발상 보너스
+            elif score > 0 and fg > 0.5:
+                score -= 0.02  # 과열 패널티
+
         return max(-1.0, min(1.0, score))
 
     def _calc_confidence(self, result: ExpertAnalysis) -> float:

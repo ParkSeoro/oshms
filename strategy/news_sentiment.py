@@ -105,6 +105,8 @@ class NewsSentimentAnalyzer:
         self.session = requests.Session()
         self._cache: dict[str, tuple[float, SentimentResult]] = {}
         self._cache_ttl = 300  # 5분 캐시
+        # v3.4: 감성 모멘텀 추적 (이전 점수 기억 → 개선/악화 감지)
+        self._prev_scores: dict[str, float] = {}
 
     def analyze(self, stock_code: str, stock_name: str) -> SentimentResult:
         """종목의 최신 뉴스를 분석하여 감성 점수를 반환한다."""
@@ -117,6 +119,20 @@ class NewsSentimentAnalyzer:
 
         news_items = self._collect_news(stock_name)
         result = self._analyze_sentiment(stock_code, stock_name, news_items)
+
+        # v3.4: 감성 모멘텀 추적 — 이전 대비 개선/악화 감지
+        prev = self._prev_scores.get(cache_key, 0)
+        momentum = result.overall_score - prev
+        if abs(momentum) >= 0.2:
+            if momentum > 0:
+                # 감성 개선 → 점수 살짝 부스트
+                result.overall_score = min(1.0, result.overall_score + 0.05)
+                logger.info("[%s] 감성 모멘텀 개선: %.2f → %.2f", stock_name, prev, result.overall_score)
+            else:
+                # 감성 악화 → 점수 하향
+                result.overall_score = max(-1.0, result.overall_score - 0.05)
+                logger.info("[%s] 감성 모멘텀 악화: %.2f → %.2f", stock_name, prev, result.overall_score)
+        self._prev_scores[cache_key] = result.overall_score
 
         self._cache[cache_key] = (now, result)
         logger.info(
