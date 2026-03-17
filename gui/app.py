@@ -2112,15 +2112,43 @@ class OshmsApp:
         self._sell_holding_by_name(values[0])
 
     def _sell_holding_by_name(self, stock_name):
-        """종목명으로 보유 종목을 찾아서 매도한다."""
-        # 마지막 잔고에서 종목코드 찾기
-        code = self._find_stock_code_by_name(stock_name)
-        if not code:
-            messagebox.showwarning("매도 실패", f"'{stock_name}' 종목코드를 찾을 수 없습니다.")
+        """종목명으로 보유 종목을 찾아서 매도한다 (백그라운드 처리)."""
+        if not messagebox.askyesno("매도 확인",
+                                    f"{stock_name}\n\n전량 시장가로 매도하시겠습니까?"):
             return
-        self.manual_sell_code.delete(0, tk.END)
-        self.manual_sell_code.insert(0, code)
-        self._manual_sell()
+
+        def _do_find_and_sell():
+            try:
+                api = self._get_api()
+                balance = api.get_balance()
+                code = None
+                quantity = 0
+                for h in balance.get("holdings", []):
+                    if h.get("stock_name") == stock_name:
+                        code = h["stock_code"]
+                        quantity = h["quantity"]
+                        break
+
+                if not code:
+                    self.root.after(0, lambda: messagebox.showwarning(
+                        "매도 실패", f"'{stock_name}' 종목을 보유하고 있지 않습니다."))
+                    return
+
+                result = api.sell_market_order(code, quantity)
+                if result["success"]:
+                    msg = f"{stock_name} {quantity}주 매도 완료"
+                    self.root.after(0, lambda: (
+                        messagebox.showinfo("매도 완료", msg),
+                        self._refresh_balance(),
+                    ))
+                else:
+                    err = result.get("message", "알 수 없는 오류")
+                    self.root.after(0, lambda: messagebox.showerror("매도 실패", err))
+            except Exception as e:
+                err = str(e)
+                self.root.after(0, lambda: messagebox.showerror("매도 오류", err))
+
+        threading.Thread(target=_do_find_and_sell, daemon=True).start()
 
     def _find_stock_code_by_name(self, name):
         """최근 잔고에서 종목명으로 코드를 찾는다."""
