@@ -1051,11 +1051,11 @@ class AutoTrader:
                 signal.strength, signal.reason,
             )
 
-            # v4.0: 소액 빈번 거래 — 매수 문턱 낮춤
-            min_strength = 0.15 if isinstance(self.strategy, ExpertStrategy) else 0.2
+            # v4.0: 소액 빈번 거래 — 매수 문턱 낮춤 (레짐 조정 축소)
+            min_strength = 0.12 if isinstance(self.strategy, ExpertStrategy) else 0.15
             regime_buy_adj = self._regime_adj.get("buy_threshold_adj", 0)
             if regime_buy_adj:
-                min_strength = max(0.10, min_strength + regime_buy_adj)
+                min_strength = max(0.08, min_strength + regime_buy_adj * 0.3)
 
             # v2.9: 패턴 메모리 보강 (유사 패턴 승률로 강도 보정)
             if self._evolution and isinstance(self.strategy, ExpertStrategy):

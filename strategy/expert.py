@@ -387,13 +387,6 @@ class ExpertStrategy(BaseStrategy):
             label = "탐욕" if fg > 0 else "공포"
             logger.debug("[%s] 시장 심리: %s (%.2f)", stock_name, label, fg)
 
-        # ── v3.4: 섹터 모멘텀 분석 ──
-        if self._sector_analyzer:
-            try:
-                self._sector_analyzer.update()
-            except Exception:
-                pass
-
         # ── 종합 점수 계산 (v3.3 심리 + v3.4 섹터 포함) ──
         result.total_score = self._weighted_score(result)
         result.confidence = self._calc_confidence(result)
@@ -809,42 +802,41 @@ class ExpertStrategy(BaseStrategy):
         sell_thr = thresholds["sell"]
         strong_sell_thr = thresholds["strong_sell"]
 
-        # 시장 컨텍스트에 따른 추가 조정
+        # 시장 컨텍스트에 따른 추가 조정 (v4.0: 소액 전략이므로 조정폭 축소)
         buy_adj = 0
         sell_adj = 0
         if result.market_ctx:
             if result.market_ctx.regime == "trending_down":
-                buy_adj = 0.12
-                sell_adj = -0.05
+                buy_adj = 0.03   # v4.0: 0.12→0.03 (하락장도 매수 기회)
+                sell_adj = -0.02
             elif result.market_ctx.regime == "volatile":
-                buy_adj = 0.08
-                sell_adj = -0.03
+                buy_adj = 0.02   # v4.0: 0.08→0.02
+                sell_adj = -0.01
             elif result.market_ctx.regime == "trending_up":
-                buy_adj = -0.03
+                buy_adj = -0.02
             if not result.market_ctx.trading_ok:
                 return "HOLD"
 
-        # 버핏 원칙: 적자 기업은 절대 매수하지 않는다
-        if result.per < 0 and score > 0:
-            return "HOLD"
+        # v4.0: 적자 기업 필터 완화 — 단타 전략이므로 PER 무관하게 기술적 분석 우선
+        # (기존: PER < 0이면 무조건 HOLD → 삭제)
 
-        # 버핏 원칙: 극고PER(50+) 기업은 매수 매우 신중
-        if result.per > 50 and score > 0:
-            buy_adj += 0.10
+        # 극고PER(100+) 기업만 신중
+        if result.per > 100 and score > 0:
+            buy_adj += 0.05  # v4.0: PER>50/+0.10 → PER>100/+0.05
 
-        # 거래량 미달 시 매수 보류
-        if result.technical and result.technical.volume_ratio < 0.8:
+        # 거래량 극히 부족할 때만 보류 (v4.0: 0.8→0.3)
+        if result.technical and result.technical.volume_ratio < 0.3:
             if score > 0:
                 return "HOLD"
 
-        # 장 시작 직후 변동성 구간
+        # 장 시작 직후 변동성 구간 (v4.0: 축소)
         now_str = datetime.now().strftime("%H:%M")
-        if "09:00" <= now_str <= "09:15" and score > 0:
-            buy_adj += 0.10
+        if "09:00" <= now_str <= "09:10" and score > 0:
+            buy_adj += 0.03  # v4.0: 0.10→0.03
 
-        if score >= strong_buy_thr + buy_adj and confidence >= 0.35:
+        if score >= strong_buy_thr + buy_adj and confidence >= 0.25:
             return "STRONG_BUY"
-        elif score >= buy_thr + buy_adj and confidence >= 0.25:
+        elif score >= buy_thr + buy_adj and confidence >= 0.15:
             return "BUY"
         elif score <= strong_sell_thr + sell_adj and confidence >= 0.25:
             return "STRONG_SELL"
