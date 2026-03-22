@@ -46,7 +46,7 @@ class AutoTrader:
 
         # 손절 후 재매수 방지 (종목코드 → 쿨다운 만료 시각)
         self._cooldown_stocks: dict[str, float] = {}
-        self._COOLDOWN_SECONDS = 900  # 15분 쿨다운
+        self._COOLDOWN_SECONDS = 300  # v4.0: 15분→5분 쿨다운 (빠른 재진입)
 
         # 진화 엔진 (Level 0: 파라미터 진화)
         self._evolution = None
@@ -1081,7 +1081,8 @@ class AutoTrader:
                                 "  📚 패턴메모리 강화: +0.08 (유사%d건, 승률=%.0f%%)",
                                 recall["matches"], recall["win_rate"],
                             )
-                        elif recall["bias"] == "bearish" and recall["confidence"] > 0.5:
+                        elif recall["bias"] == "bearish" and recall["confidence"] > 0.7:
+                            # v4.0: 0.5→0.7 (높은 확신에서만 차단, 전체 하락장 대응)
                             logger.info(
                                 "  📚 패턴메모리 경고: 유사패턴 손실 (승률=%.0f%%) → 매수 보류",
                                 recall["win_rate"],

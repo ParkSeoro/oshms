@@ -46,15 +46,15 @@ class MarketContext:
 class MarketContextAnalyzer:
     """시장 컨텍스트 분석기."""
 
-    # 시간대별 단타 적합도 (경험 기반)
+    # 시간대별 단타 적합도 (v4.0: 소액 빈번 거래 — 장중 전 시간대 활용)
     TIME_SUITABILITY = {
         "pre_market": 0.0,       # 장 전
         "opening": 0.9,          # 09:00-09:30 (변동성 큼, 기회 많음)
-        "morning_early": 0.8,    # 09:30-10:30
-        "morning_late": 0.6,     # 10:30-11:30
-        "lunch": 0.3,            # 11:30-13:00 (거래량 급감)
-        "afternoon_early": 0.5,  # 13:00-14:00
-        "afternoon_late": 0.7,   # 14:00-14:50
+        "morning_early": 0.9,    # 09:30-10:30 (v4.0: 0.8→0.9)
+        "morning_late": 0.7,     # 10:30-11:30 (v4.0: 0.6→0.7)
+        "lunch": 0.5,            # 11:30-13:00 (v4.0: 0.3→0.5 점심에도 거래)
+        "afternoon_early": 0.7,  # 13:00-14:00 (v4.0: 0.5→0.7)
+        "afternoon_late": 0.8,   # 14:00-14:50
         "closing": 0.8,          # 14:50-15:20 (마감 동시호가)
         "post_market": 0.0,      # 장 후
     }
@@ -178,7 +178,11 @@ class MarketContextAnalyzer:
         return max(-1.0, min(1.0, score))
 
     def get_regime_strategy_adjustment(self, ctx: MarketContext) -> dict[str, float]:
-        """레짐에 따른 전략 파라미터 조정값을 반환한다."""
+        """레짐에 따른 전략 파라미터 조정값을 반환한다.
+
+        v4.0: 소액 빈번 거래 전략 — 어떤 시장 상황에서도 매수 기회를 유지.
+        하락장/변동성장에서도 적극적으로 거래 (단, 포지션 크기만 줄임).
+        """
         adjustments = {
             "buy_threshold_adj": 0.0,   # 매수 임계값 조정
             "sell_threshold_adj": 0.0,  # 매도 임계값 조정
@@ -187,32 +191,29 @@ class MarketContextAnalyzer:
         }
 
         if ctx.regime == "trending_up":
-            # 상승장: 매수 적극적, 매도 보수적
-            adjustments["buy_threshold_adj"] = -0.05
-            adjustments["position_size_mult"] = 1.2
-            adjustments["stop_loss_adj"] = -0.5  # 손절 여유
+            # 상승장: 매수 적극적
+            adjustments["buy_threshold_adj"] = -0.03
+            adjustments["position_size_mult"] = 1.1
 
         elif ctx.regime == "trending_down":
-            # 하락장: 매수 보수적, 매도 적극적
-            adjustments["buy_threshold_adj"] = 0.15
-            adjustments["sell_threshold_adj"] = -0.1
-            adjustments["position_size_mult"] = 0.6
-            adjustments["stop_loss_adj"] = 0.5  # 손절 타이트
+            # v4.0: 하락장도 단타 기회 — 매수 문턱 소폭만 올림
+            adjustments["buy_threshold_adj"] = 0.02  # v4.0: 0.15→0.02
+            adjustments["sell_threshold_adj"] = -0.02
+            adjustments["position_size_mult"] = 0.8  # v4.0: 0.6→0.8 (크기만 줄임)
 
         elif ctx.regime == "volatile":
-            # 급변장: 전반적 보수적
-            adjustments["buy_threshold_adj"] = 0.1
-            adjustments["position_size_mult"] = 0.5
-            adjustments["stop_loss_adj"] = 1.0  # 넓은 손절
+            # v4.0: 변동성장 = 스캘핑 최적 환경
+            adjustments["buy_threshold_adj"] = 0.01  # v4.0: 0.10→0.01
+            adjustments["position_size_mult"] = 0.7
 
         elif ctx.regime == "ranging":
             # 횡보장: 스캘핑 유리
-            adjustments["buy_threshold_adj"] = -0.05
-            adjustments["sell_threshold_adj"] = -0.05
+            adjustments["buy_threshold_adj"] = -0.03
+            adjustments["sell_threshold_adj"] = -0.02
 
-        # 시간대 보정
-        if ctx.time_suitability < 0.4:
-            adjustments["buy_threshold_adj"] += 0.1
-            adjustments["position_size_mult"] *= 0.7
+        # v4.0: 시간대 보정 축소 (점심에도 거래 가능)
+        if ctx.time_suitability < 0.2:
+            adjustments["buy_threshold_adj"] += 0.02
+            adjustments["position_size_mult"] *= 0.8
 
         return adjustments

@@ -1120,11 +1120,11 @@ class ExpertStrategy(BaseStrategy):
                 reason=f"장단기 동시 상승 (일봉={long_trend:+.2f} 분봉={short_trend:+.2f})",
             )
 
-        # 장기 하락 + 단기 하락 = 강한 매도
+        # 장기 하락 + 단기 하락 = 매도 방향 (v4.0: 감쇠폭 축소, 단타는 일봉 덜 중요)
         elif long_trend < -0.3 and short_trend < -0.2:
             result.update(
                 alignment="aligned_down",
-                strength_adj=-0.15,
+                strength_adj=-0.05,  # v4.0: -0.15→-0.05
                 reason=f"장단기 동시 하락 (일봉={long_trend:+.2f} 분봉={short_trend:+.2f})",
             )
 
@@ -1145,26 +1145,18 @@ class ExpertStrategy(BaseStrategy):
                     reason=f"눌림 매수 (일봉={long_trend:+.2f}, 분봉 조정={short_trend:+.2f})",
                 )
 
-        # 장기 하락 + 단기 반등 = 데드캣 바운스 주의
+        # v4.0: 장기 하락 + 단기 반등 = 단타 기회 (일봉 무관하게 분봉 반등 매수)
         elif long_trend < -0.3 and short_trend > 0.2:
             result.update(
                 alignment="divergent",
-                strength_adj=-0.10,
-                reason=f"데드캣 바운스 주의 (일봉 하락={long_trend:+.2f}, 분봉 반등={short_trend:+.2f})",
+                strength_adj=0.0,  # v4.0: -0.10→0 (단타는 분봉 반등이 중요)
+                reason=f"분봉 반등 (일봉 하락={long_trend:+.2f}, 분봉 반등={short_trend:+.2f})",
             )
 
-        # 약한 추세 차이
+        # 약한 추세 차이 — 단타에선 영향 없음
         else:
-            diff = abs(long_trend - short_trend)
-            if diff < 0.2:
-                result.update(alignment="neutral", strength_adj=0,
-                              reason="장단기 중립")
-            else:
-                result.update(
-                    alignment="divergent",
-                    strength_adj=-0.05,
-                    reason=f"장단기 불일치 (일봉={long_trend:+.2f} 분봉={short_trend:+.2f})",
-                )
+            result.update(alignment="neutral", strength_adj=0,
+                          reason="장단기 중립")
 
         logger.info(
             "[멀티TF] %s: %s | adj=%+.2f",
