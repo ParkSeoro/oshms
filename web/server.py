@@ -32,6 +32,7 @@ _state = {
     "thread": None,
     "logs": [],
     "settings": None,
+    "api": None,  # KISApi 인스턴스 캐시 (토큰 재사용)
 }
 
 
@@ -39,6 +40,21 @@ def _get_settings() -> Settings:
     if _state["settings"] is None:
         _state["settings"] = Settings.from_env()
     return _state["settings"]
+
+
+def _get_api():
+    """KISApi 인스턴스를 캐시하여 반환한다 (토큰 재사용)."""
+    from api.kis_api import KISApi
+    if _state["api"] is None:
+        s = _get_settings()
+        _state["api"] = KISApi(s)
+    return _state["api"]
+
+
+def _reset_api():
+    """설정 변경 시 API 인스턴스를 재생성한다."""
+    _state["api"] = None
+    _state["settings"] = None
 
 
 # ─────────────────── 페이지 ───────────────────
@@ -73,9 +89,8 @@ def api_status():
 @app.route("/api/balance")
 def api_balance():
     try:
-        from api.kis_api import KISApi
+        api = _get_api()
         s = _get_settings()
-        api = KISApi(s)
         balance = api.get_balance()
         # 초기 자본금 정보 추가
         balance["initial_capital"] = s.initial_capital
@@ -91,12 +106,11 @@ def api_analyze():
     name = data.get("name", code)
 
     try:
-        from api.kis_api import KISApi
         from strategy.expert import ExpertStrategy
         from strategy.market_context import MarketContextAnalyzer
 
         s = _get_settings()
-        api = KISApi(s)
+        api = _get_api()
         strategy = ExpertStrategy(api=api, settings=s)
 
         try:
@@ -186,12 +200,11 @@ def api_trade_start():
         logging.getLogger("oshms").addHandler(handler)
 
         try:
-            from api.kis_api import KISApi
             from strategy import ExpertStrategy, ScalpingStrategy, MomentumStrategy, CombinedStrategy
             from trading.trader import AutoTrader
 
-            s = Settings.from_env()
-            api = KISApi(s)
+            s = _get_settings()
+            api = _get_api()
 
             strategy_map = {
                 "expert": lambda: ExpertStrategy(api=api, settings=s),
@@ -285,7 +298,7 @@ def api_save_settings():
     env_lines.append("LOG_LEVEL=INFO")
 
     Path(".env").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
-    _state["settings"] = None
+    _reset_api()  # 설정 변경 시 API 인스턴스 재생성 (토큰 재발급)
     return jsonify({"message": "저장 완료"})
 
 
@@ -298,9 +311,7 @@ def api_manual_sell():
         return jsonify({"error": "종목코드를 입력하세요"}), 400
 
     try:
-        from api.kis_api import KISApi
-        s = _get_settings()
-        api = KISApi(s)
+        api = _get_api()
         balance = api.get_balance()
 
         # 보유 종목에서 해당 종목 찾기
@@ -347,9 +358,8 @@ def api_manual_buy():
         return jsonify({"error": "종목코드를 입력하세요"}), 400
 
     try:
-        from api.kis_api import KISApi
+        api = _get_api()
         s = _get_settings()
-        api = KISApi(s)
 
         # 현재가 조회
         price_data = api.get_current_price(stock_code)

@@ -48,9 +48,9 @@ class Settings:
     def from_env(cls, env_path: str | None = None) -> "Settings":
         """환경변수에서 설정을 로드한다."""
         if env_path:
-            load_dotenv(env_path)
+            load_dotenv(env_path, override=True)
         else:
-            load_dotenv()
+            load_dotenv(override=True)
 
         return cls(
             app_key=os.getenv("KIS_APP_KEY", ""),
