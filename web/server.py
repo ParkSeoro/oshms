@@ -593,6 +593,107 @@ def api_evolution():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/evolution/history")
+def api_evolution_history():
+    """진화 내역 상세 — 적합도 추이, 활성 규칙, 가중치 변경, 코드진화 로드맵."""
+    result = {}
+
+    # 파라미터 진화 내역
+    try:
+        from learning.evolution import EvolutionEngine
+        evo = EvolutionEngine()
+        s = evo.state
+        result["param"] = {
+            "generation": s.generation,
+            "best_fitness": s.best_fitness,
+            "best_generation": s.best_generation,
+            "last_evolution": s.last_evolution,
+            "fitness_history": s.fitness_history[-10:],   # 최근 10세대
+            "active_rules": s.active_rules,
+            "weight_history": s.weight_history[-5:],      # 최근 5건
+            "risk_params": s.risk_params,
+            "risk_evolution_history": s.risk_evolution_history[-5:],
+        }
+    except Exception as e:
+        result["param"] = {"error": str(e)}
+
+    # 코드 자체 진화 내역
+    try:
+        from learning.code_evolution import CodeEvolutionEngine
+        ce = CodeEvolutionEngine()
+        cs = ce.state
+        result["code"] = {
+            "cycle": cs.cycle,
+            "total_improvements": cs.total_improvements,
+            "total_rollbacks": cs.total_rollbacks,
+            "last_cycle": cs.last_cycle,
+            "last_diagnosis": cs.last_diagnosis,
+            "roadmap": cs.roadmap,
+            "applied_modules": cs.applied_modules[-5:],   # 최근 5건
+            "performance_history": cs.performance_history[-10:],
+        }
+    except Exception as e:
+        result["code"] = {"error": str(e)}
+
+    return jsonify(result)
+
+
+@app.route("/api/evolution/schedule")
+def api_evolution_schedule():
+    """다음 진화 예정 시간 — 실시간 타이머용."""
+    import time as _time
+    trader = _state.get("trader")
+    if not trader:
+        return jsonify({"running": False, "message": "자동매매 미실행"})
+
+    now = _time.time()
+    result = {"running": True}
+
+    # 파라미터 진화 스케줄
+    try:
+        last_evo = getattr(trader, '_last_evolution_time', 0)
+        fallback = getattr(trader, '_EVOLUTION_TIME_FALLBACK', 1800)
+        trades_since = getattr(trader, '_trades_since_evolution', 0)
+        evo_interval = 3  # EvolutionEngine.EVOLUTION_INTERVAL
+        if hasattr(trader, '_evolution') and trader._evolution:
+            evo_interval = trader._evolution.EVOLUTION_INTERVAL
+
+        elapsed = now - last_evo if last_evo > 0 else 0
+        remaining_sec = max(0, fallback - elapsed) if last_evo > 0 else fallback
+        result["param_evolution"] = {
+            "trades_since": trades_since,
+            "trades_needed": evo_interval,
+            "time_remaining_sec": int(remaining_sec),
+            "time_fallback_sec": fallback,
+            "trigger": "거래" if trades_since >= evo_interval else "시간",
+        }
+    except Exception as e:
+        result["param_evolution"] = {"error": str(e)}
+
+    # 코드 진화 스케줄
+    try:
+        last_code = getattr(trader, '_last_code_evolution_time', 0)
+        code_fallback = getattr(trader, '_CODE_EVOLUTION_TIME_FALLBACK', 2400)
+        trades_since_code = getattr(trader, '_trades_since_code_evolution', 0)
+        code_interval = 3  # CodeEvolutionEngine.CYCLE_INTERVAL
+        if hasattr(trader, '_code_evolution') and trader._code_evolution:
+            code_interval = trader._code_evolution.CYCLE_INTERVAL
+
+        elapsed_code = now - last_code if last_code > 0 else 0
+        remaining_code = max(0, code_fallback - elapsed_code) if last_code > 0 else code_fallback
+        result["code_evolution"] = {
+            "trades_since": trades_since_code,
+            "trades_needed": code_interval,
+            "time_remaining_sec": int(remaining_code),
+            "time_fallback_sec": code_fallback,
+            "trigger": "거래" if trades_since_code >= code_interval else "시간",
+        }
+    except Exception as e:
+        result["code_evolution"] = {"error": str(e)}
+
+    return jsonify(result)
+
+
 def _check_port_available(host: str, port: int) -> bool:
     """포트가 사용 가능한지 확인한다."""
     import socket
