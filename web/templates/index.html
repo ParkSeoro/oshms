@@ -2289,6 +2289,12 @@ body::after {
      ═══════════════════════════════════ */
   function loadSettings() {
     fetch('/api/settings').then(function(r) { return r.json(); }).then(function(d) {
+      // API 키: 마스킹된 값 표시 (placeholder로) — 새로 입력하면 덮어쓰기
+      if (d.app_key_set) $('sAppKey').placeholder = d.app_key + ' (설정됨, 변경 시 새로 입력)';
+      else $('sAppKey').placeholder = 'API Key를 입력하세요';
+      if (d.app_secret_set) $('sAppSecret').placeholder = d.app_secret + ' (설정됨, 변경 시 새로 입력)';
+      else $('sAppSecret').placeholder = 'API Secret을 입력하세요';
+
       $('sAccount').value = d.account_no || '';
       $('sMock').value = d.is_mock ? 'true' : 'false';
       $('sInitialCapital').value = d.initial_capital || 100000;
@@ -2298,7 +2304,7 @@ body::after {
       $('sTakeProfit').value = d.take_profit_pct || 3.0;
       $('sStartTime').value = d.trading_start_time || '09:05';
       $('sEndTime').value = d.trading_end_time || '15:10';
-      if (d.openai_api_key) $('sOpenAIKey').value = d.openai_api_key;
+      if (d.openai_api_key_set) $('sOpenAIKey').placeholder = d.openai_api_key + ' (설정됨)';
     }).catch(function() {});
   }
 
@@ -2325,6 +2331,12 @@ body::after {
     }).then(function(r) { return r.json(); }).then(function() {
       var modeStr = body.is_mock ? '모의투자' : '실전투자';
       showToast('설정 저장 완료 (투자모드: ' + modeStr + ')', 'success');
+      // 저장 후 설정 다시 로드 (마스킹 값 업데이트)
+      loadSettings();
+      // 입력 필드 초기화 (새 값이 저장됐으므로)
+      $('sAppKey').value = '';
+      $('sAppSecret').value = '';
+      $('sOpenAIKey').value = '';
       /* 대시보드 및 상태 즉시 새로고침 */
       window.refreshDashboard();
       pollStatus();

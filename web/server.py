@@ -254,8 +254,19 @@ def api_logs():
 @app.route("/api/settings", methods=["GET"])
 def api_get_settings():
     s = _get_settings()
+    # 마스킹: 앞 4자리만 보이고 나머지는 *** (설정 확인용)
+    def _mask(val: str) -> str:
+        if not val:
+            return ""
+        if len(val) <= 6:
+            return "***설정됨***"
+        return val[:4] + "***" + val[-2:]
+
     return jsonify({
-        "app_key": "***" if s.app_key else "",
+        "app_key": _mask(s.app_key),
+        "app_secret": _mask(s.app_secret),
+        "app_key_set": bool(s.app_key),
+        "app_secret_set": bool(s.app_secret),
         "account_no": s.account_no,
         "is_mock": s.is_mock,
         "initial_capital": s.initial_capital,
@@ -265,36 +276,47 @@ def api_get_settings():
         "take_profit_pct": s.take_profit_pct,
         "trading_start_time": s.trading_start_time,
         "trading_end_time": s.trading_end_time,
-        "openai_api_key": "***" if s.openai_api_key else "",
+        "openai_api_key": _mask(s.openai_api_key),
+        "openai_api_key_set": bool(s.openai_api_key),
     })
 
 
 @app.route("/api/settings", methods=["POST"])
 def api_save_settings():
     data = request.json
+    # 기존 설정 로드 — 비밀 값이 빈 칸이면 기존 값 유지
+    existing = _get_settings()
+
     env_lines = []
-    field_map = {
-        "app_key": "KIS_APP_KEY",
-        "app_secret": "KIS_APP_SECRET",
-        "account_no": "KIS_ACCOUNT_NO",
-        "is_mock": "KIS_MOCK",
-        "initial_capital": "INITIAL_CAPITAL",
-        "max_buy_amount": "MAX_BUY_AMOUNT",
-        "max_hold_count": "MAX_HOLD_COUNT",
-        "stop_loss_pct": "STOP_LOSS_PCT",
-        "take_profit_pct": "TAKE_PROFIT_PCT",
-        "trading_start_time": "TRADING_START_TIME",
-        "trading_end_time": "TRADING_END_TIME",
-    }
-    for key, env_key in field_map.items():
-        val = data.get(key, "")
-        if key == "is_mock":
-            val = "true" if val else "false"
-        env_lines.append(f"{env_key}={val}")
-    # AI API 키
+
+    # API 키: 빈 값이거나 마스킹 값(***포함)이면 기존 값 유지
+    app_key = data.get("app_key", "")
+    if not app_key or "***" in app_key:
+        app_key = existing.app_key
+    env_lines.append(f"KIS_APP_KEY={app_key}")
+
+    app_secret = data.get("app_secret", "")
+    if not app_secret or "***" in app_secret:
+        app_secret = existing.app_secret
+    env_lines.append(f"KIS_APP_SECRET={app_secret}")
+
+    env_lines.append(f"KIS_ACCOUNT_NO={data.get('account_no', existing.account_no)}")
+    env_lines.append(f"KIS_MOCK={'true' if data.get('is_mock', existing.is_mock) else 'false'}")
+    env_lines.append(f"INITIAL_CAPITAL={data.get('initial_capital', existing.initial_capital)}")
+    env_lines.append(f"MAX_BUY_AMOUNT={data.get('max_buy_amount', existing.max_buy_amount)}")
+    env_lines.append(f"MAX_HOLD_COUNT={data.get('max_hold_count', existing.max_hold_count)}")
+    env_lines.append(f"STOP_LOSS_PCT={data.get('stop_loss_pct', existing.stop_loss_pct)}")
+    env_lines.append(f"TAKE_PROFIT_PCT={data.get('take_profit_pct', existing.take_profit_pct)}")
+    env_lines.append(f"TRADING_START_TIME={data.get('trading_start_time', existing.trading_start_time)}")
+    env_lines.append(f"TRADING_END_TIME={data.get('trading_end_time', existing.trading_end_time)}")
+
+    # AI API 키: 빈 값이거나 마스킹 값이면 기존 값 유지
     openai_key = data.get("openai_api_key", "")
+    if not openai_key or "***" in openai_key:
+        openai_key = existing.openai_api_key
     if openai_key:
         env_lines.append(f"OPENAI_API_KEY={openai_key}")
+
     env_lines.append("LOG_LEVEL=INFO")
 
     Path(".env").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
