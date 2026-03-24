@@ -1852,7 +1852,7 @@ body::after {
     icon.classList.add('spinning');
 
     Promise.all([
-      fetch('/api/balance').then(function(r) { return r.json(); }),
+      fetch('/api/balance').then(function(r) { return r.json(); }).catch(function() { return {error: '잔고 조회 실패'}; }),
       fetch('/api/report').then(function(r) { return r.json(); }).catch(function() { return {}; })
     ]).then(function(results) {
       var balance = results[0];
@@ -1860,8 +1860,33 @@ body::after {
 
       icon.classList.remove('spinning');
 
+      // 잔고 실패해도 리포트(거래기록/진화엔진) 데이터는 표시
       if (balance.error) {
         showToast(balance.error, 'error');
+        // balance 실패 시에도 report 데이터로 누적 통계 표시
+        if (report && report.summary) {
+          var rs = report.summary;
+          $('dTotalTrades').textContent = fmt(rs.total_trades || 0);
+          $('dWinRate').textContent = (rs.win_rate != null ? rs.win_rate.toFixed(1) : '0') + '%';
+          var cumP = rs.total_profit || rs.cumulative_profit || 0;
+          var cumEl = $('dCumProfit');
+          cumEl.textContent = plSign(cumP) + fmtWon(cumP);
+          cumEl.className = 'mini-value ' + plClass(cumP);
+          $('dEvoGen').textContent = rs.generation || rs.evo_generation || '--';
+        }
+        // 최근 거래 기록도 표시
+        if (report && report.daily && report.daily.length) {
+          var recentBody = $('recentTradesBody');
+          var tRows = '';
+          var recentItems = report.daily.slice(-8).reverse();
+          recentItems.forEach(function(item) {
+            var rPL = item.profit || 0;
+            var rCls = plClass(rPL);
+            tRows += '<tr><td>' + (item.date || '--') + '</td><td>매수 ' + (item.buy_count||0) + ' / 매도 ' + (item.sell_count||0) + '</td><td>' + (item.profit_rate ? item.profit_rate.toFixed(1) + '%' : '--') + '</td><td class="' + rCls + '">' + plSign(rPL) + fmtWon(rPL) + '</td></tr>';
+          });
+          recentBody.innerHTML = tRows;
+        }
+        dashboardLoaded = true;
         return;
       }
 

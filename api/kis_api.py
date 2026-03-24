@@ -546,9 +546,17 @@ class KISApi:
         # 500 에러 시 토큰 재발급 후 1회 재시도
         if resp.status_code == 500:
             mode = "모의투자" if self.settings.is_mock else "실전투자"
-            logger.warning("잔고 조회 500 에러 — 토큰 재발급 후 재시도 (모드: %s)", mode)
+            # 서버 응답 본문 확인
+            try:
+                err_detail = resp.json()
+                err_msg = err_detail.get("msg1", "") or err_detail.get("msg", "")
+            except Exception:
+                err_msg = resp.text[:200]
+            logger.warning("잔고 조회 500 에러 — 토큰 재발급 후 재시도 (모드: %s, tr_id: %s, 계좌: %s-%s, 응답: %s)",
+                           mode, tr_id, acnt, suffix, err_msg)
             self._access_token = ""
             self._token_expires_at = datetime.min
+            time.sleep(0.5)  # 잠시 대기 후 재시도
             try:
                 resp = self.session.get(url, headers=self._headers(tr_id), params=params, timeout=10)
             except Exception:
@@ -556,10 +564,19 @@ class KISApi:
 
         if resp.status_code != 200:
             mode = "모의투자" if self.settings.is_mock else "실전투자"
+            try:
+                err_detail = resp.json()
+                err_msg = err_detail.get("msg1", "") or err_detail.get("msg", "")
+            except Exception:
+                err_msg = resp.text[:200]
+            logger.error("잔고 조회 실패: HTTP %d, tr_id=%s, 계좌=%s-%s, 응답=%s",
+                         resp.status_code, tr_id, acnt, suffix, err_msg)
             raise ConnectionError(
                 f"잔고 조회 실패 (HTTP {resp.status_code})\n\n"
                 f"현재 모드: {mode}\n"
-                f"계좌: {acnt}-{suffix}\n\n"
+                f"계좌: {acnt}-{suffix}\n"
+                f"tr_id: {tr_id}\n"
+                f"서버 응답: {err_msg}\n\n"
                 f"확인 사항:\n"
                 f"1. API KEY가 현재 모드({mode})용인지 확인\n"
                 f"2. 계좌번호가 올바른지 확인\n"

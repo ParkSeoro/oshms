@@ -144,7 +144,15 @@ def api_balance():
         balance["initial_capital"] = s.initial_capital
         return jsonify(balance)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.warning("잔고 조회 실패: %s", e)
+        # 에러 시에도 기본 구조는 반환 (UI가 최소한 동작하도록)
+        s = _get_settings()
+        return jsonify({
+            "error": str(e),
+            "holdings": [],
+            "summary": {"available_cash": 0, "total_eval_amount": 0, "total_profit_loss": 0},
+            "initial_capital": s.initial_capital,
+        })
 
 
 @app.route("/api/analyze", methods=["POST"])
@@ -509,6 +517,15 @@ def api_report():
         summary["active_rules"] = len(evo.state.active_rules)
     except Exception:
         summary["generation"] = 0
+
+    # 코드 진화 엔진 정보 추가
+    try:
+        from learning.code_evolution import CodeEvolutionEngine
+        ce = CodeEvolutionEngine()
+        summary["code_evolution_cycle"] = ce.state.cycle
+        summary["code_evolution_improvements"] = ce.state.total_improvements
+    except Exception:
+        summary["code_evolution_cycle"] = 0
 
     # 누적통계(StateManager) 병합
     try:
