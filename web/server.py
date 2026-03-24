@@ -52,13 +52,22 @@ def index():
 
 @app.route("/api/status")
 def api_status():
-    s = _get_settings()
-    return jsonify({
-        "trading": _state["trading"],
-        "mock": s.is_mock,
-        "account": f"{s.account_number}-{s.account_suffix}" if s.account_no else "",
-        "api_configured": bool(s.app_key and s.app_secret),
-    })
+    try:
+        s = _get_settings()
+        return jsonify({
+            "trading": _state["trading"],
+            "mock": s.is_mock,
+            "account": f"{s.account_number}-{s.account_suffix}" if s.account_no else "",
+            "api_configured": bool(s.app_key and s.app_secret),
+        })
+    except Exception as e:
+        return jsonify({
+            "trading": False,
+            "mock": True,
+            "account": "",
+            "api_configured": False,
+            "error": str(e),
+        })
 
 
 @app.route("/api/balance")
@@ -487,10 +496,72 @@ def api_evolution():
         return jsonify({"error": str(e)}), 500
 
 
+def _check_port_available(host: str, port: int) -> bool:
+    """포트가 사용 가능한지 확인한다."""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1)
+            s.bind((host, port))
+            return True
+    except OSError:
+        return False
+
+
+def _find_available_port(start_port: int = 5000, max_tries: int = 10) -> int:
+    """사용 가능한 포트를 찾는다."""
+    for p in range(start_port, start_port + max_tries):
+        if _check_port_available("127.0.0.1", p):
+            return p
+    return start_port
+
+
 def run_server(host="0.0.0.0", port=5000, debug=False):
     """웹 서버를 실행한다."""
+    import socket
+    import webbrowser
+
+    # 포트 충돌 확인
+    if not _check_port_available(host if host != "0.0.0.0" else "127.0.0.1", port):
+        old_port = port
+        port = _find_available_port(port + 1)
+        logger.warning("포트 %d 사용 중 → %d로 변경", old_port, port)
+        print(f"⚠ 포트 {old_port} 사용 중 → {port}으로 변경합니다.")
+
+    # 로컬 IP 주소 확인
+    local_ip = "127.0.0.1"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+
     logger.info("OSHMS 웹 서버 시작: http://%s:%d", host, port)
-    app.run(host=host, port=port, debug=debug)
+    print()
+    print("=" * 55)
+    print("  OSHMS 웹 서버 실행 중")
+    print("=" * 55)
+    print(f"  PC 브라우저:  http://localhost:{port}")
+    print(f"  PC 브라우저:  http://127.0.0.1:{port}")
+    if local_ip != "127.0.0.1":
+        print(f"  모바일/다른PC: http://{local_ip}:{port}")
+    print()
+    print("  접속이 안 되면:")
+    print(f"    1. 브라우저에서 http://localhost:{port} 으로 접속")
+    print(f"    2. Windows 방화벽에서 Python 허용 확인")
+    print(f"    3. python main.py web --port 8080 으로 포트 변경")
+    print("=" * 55)
+    print()
+
+    # 자동으로 브라우저 열기
+    try:
+        webbrowser.open(f"http://localhost:{port}")
+    except Exception:
+        pass
+
+    app.run(host=host, port=port, debug=debug, threaded=True)
 
 
 if __name__ == "__main__":
