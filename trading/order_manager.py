@@ -66,9 +66,10 @@ class OrderManager:
 
     TRADE_LOG_PATH = Path("logs/trades.json")
 
-    def __init__(self, api: KISApi, settings: Settings):
+    def __init__(self, api: KISApi, settings: Settings, market: str = "KR"):
         self.api = api
         self.settings = settings
+        self.market = market  # v4.2: 활성 시장
         self.positions: dict[str, Position] = {}
         self.trade_history: list[TradeRecord] = []
         self._load_trade_history()
@@ -233,7 +234,11 @@ class OrderManager:
             logger.warning("[%s] 매수 수량 0: 가격=%d, 최대금액=%d", stock_code, price, self.settings.max_buy_amount)
             return False
 
-        result = self.api.buy_market_order(stock_code, quantity)
+        # v4.2: 시장별 주문 API 분기
+        if self.market != "KR":
+            result = self.api.buy_overseas_market_order(stock_code, quantity, self.market)
+        else:
+            result = self.api.buy_market_order(stock_code, quantity)
         if not result["success"]:
             return False
 
@@ -280,7 +285,11 @@ class OrderManager:
             logger.warning("[%s] 보유하지 않은 종목 매도 시도", stock_code)
             return False
 
-        result = self.api.sell_market_order(stock_code, pos.quantity)
+        # v4.2: 시장별 주문 API 분기
+        if self.market != "KR":
+            result = self.api.sell_overseas_market_order(stock_code, pos.quantity, self.market)
+        else:
+            result = self.api.sell_market_order(stock_code, pos.quantity)
         if not result["success"]:
             return False
 

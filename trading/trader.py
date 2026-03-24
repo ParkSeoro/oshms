@@ -31,11 +31,13 @@ TRADES_FILE = Path("logs/trades.json")
 class AutoTrader:
     """자동 매매 트레이더."""
 
-    def __init__(self, api: KISApi, settings: Settings, strategy: BaseStrategy):
+    def __init__(self, api: KISApi, settings: Settings, strategy: BaseStrategy,
+                 market: str = "KR"):
         self.api = api
         self.settings = settings
         self.strategy = strategy
-        self.order_manager = OrderManager(api, settings)
+        self.market = market  # 활성 시장 코드 (KR, NASD, NYSE, AMEX, SEHK, TKSE)
+        self.order_manager = OrderManager(api, settings, market=market)
         self._running = False
         self._cycle_count = 0
 
@@ -84,9 +86,23 @@ class AutoTrader:
             strategy.market_analyzer = self._market_analyzer
 
     def is_trading_time(self) -> bool:
-        """현재 시간이 매매 가능 시간인지 확인한다."""
+        """현재 시간이 매매 가능 시간인지 확인한다.
+
+        v4.2: 멀티마켓 지원 — 시장별 거래 시간 자동 판단.
+        """
+        from trading.market_scheduler import MARKETS, is_trading_time as _is_mkt_time
+        m = MARKETS.get(self.market)
+        if m:
+            return _is_mkt_time(m)
+        # 폴백: 설정 기반
         now = datetime.now().strftime("%H:%M")
         return self.settings.trading_start_time <= now <= self.settings.trading_end_time
+
+    def set_market(self, market: str):
+        """활성 시장을 변경한다."""
+        self.market = market
+        self.order_manager.market = market
+        logger.info("활성 시장 변경: %s", market)
 
     def start(self, target_stocks: list[str] | None = None, interval: int = 10) -> None:
         """자동 매매를 시작한다."""
@@ -503,14 +519,37 @@ class AutoTrader:
     # 종목 선정 (전체 시장 스캔)
     # ──────────────────────────────────────────────
 
+    # 해외 시장 인기 종목 (v4.2: 멀티마켓)
+    _OVERSEAS_STOCKS = {
+        "NASD": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "NFLX",
+                 "AMD", "INTC", "AVGO", "QCOM", "COST", "PEP", "ADBE", "CRM",
+                 "PYPL", "ABNB", "UBER", "COIN"],
+        "NYSE": ["JPM", "V", "JNJ", "WMT", "PG", "UNH", "HD", "BAC",
+                 "XOM", "CVX", "DIS", "NKE", "KO", "MCD", "GS", "BA",
+                 "CAT", "IBM", "MMM", "GE"],
+        "AMEX": ["SPY", "QQQ", "IWM", "GLD", "SLV", "XLE", "XLF", "XLK",
+                 "VXX", "UVXY", "ARKK", "SOXL", "TQQQ", "SQQQ", "SPXL", "TNA"],
+        "SEHK": ["00700", "09988", "01810", "03690", "09618", "02318", "00941",
+                 "01024", "09999", "02020", "00005", "01299", "00388", "00669",
+                 "03988", "01211"],
+        "TKSE": ["7203", "6758", "9984", "6861", "7267", "8306", "9983",
+                 "6501", "7751", "4502", "6902", "7974", "8035", "9432",
+                 "6367", "4063"],
+    }
+
     def _select_stocks_wide(self) -> list[str]:
         """전체 시장을 스캔하여 매매 후보를 선정한다.
 
-        거래량 + 거래대금 + 상승률 + 하락 반등 후보를 합산하여
-        중복 제거 후 최종 후보를 선정한다.
-
-        v3.0: 스캔 범위 대폭 확대 (20개 → 50개)
+        v4.2: 멀티마켓 — 해외 시장은 인기 종목 리스트 사용.
+        국내 시장은 거래량+거래대금+모멘텀+하락반등 합산.
         """
+        # 해외 시장이면 인기 종목 리스트 반환
+        if self.market != "KR":
+            stocks = self._OVERSEAS_STOCKS.get(self.market, [])
+            if stocks:
+                logger.info("[%s] 해외 종목 %d개 로드", self.market, len(stocks))
+                return stocks
+            return []
         now = time.time()
         if self._stock_cache and (now - self._stock_cache_time) < self._STOCK_CACHE_TTL:
             return self._stock_cache
@@ -758,9 +797,12 @@ class AutoTrader:
             except Exception as e:
                 logger.error("[%s] 익절 매도 실패: %s", code, e)
 
-        # ── 4. 장마감 처리 (15:20 이후 — v4.0: 당일 전량 청산, 오버나이트 리스크 제거) ──
+        # ── 4. 장마감 처리 (v4.2: 시장별 마감 시간 자동 판단) ──
+        from trading.market_scheduler import MARKETS, is_liquidation_time as _is_liq
         now_str = datetime.now().strftime("%H:%M")
-        if now_str >= "15:20":
+        market_info = MARKETS.get(self.market)
+        should_liquidate = _is_liq(market_info, now_str) if market_info else now_str >= "15:20"
+        if should_liquidate:
             remaining = list(self.order_manager.positions.keys())
             for code in remaining:
                 try:
@@ -1020,15 +1062,23 @@ class AutoTrader:
                 return
             del self._cooldown_stocks[stock_code]
 
-        current_price = self.api.get_current_price(stock_code)
-        if not current_price or not current_price.get("price"):
-            return
-
-        candles = self.api.get_minute_chart(stock_code, period="3")
-        if len(candles) < 20:
-            candles = self.api.get_daily_chart(stock_code, count=60)
-        if not candles:
-            return
+        # v4.2: 시장별 API 분기
+        if self.market != "KR":
+            current_price = self.api.get_overseas_price(stock_code, self.market)
+            if not current_price or not current_price.get("price"):
+                return
+            candles = self.api.get_overseas_daily_chart(stock_code, self.market, count=60)
+            if not candles:
+                return
+        else:
+            current_price = self.api.get_current_price(stock_code)
+            if not current_price or not current_price.get("price"):
+                return
+            candles = self.api.get_minute_chart(stock_code, period="3")
+            if len(candles) < 20:
+                candles = self.api.get_daily_chart(stock_code, count=60)
+            if not candles:
+                return
 
         # ── 2단계: 전략 분석 (한 번만) ──
         stock_name = current_price.get("stock_name", stock_code)

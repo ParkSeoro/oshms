@@ -1636,14 +1636,72 @@ body::after {
        ════════════════════════════════════════════════════════ -->
   <section class="page" id="page-trading">
 
+    <!-- ═══ 24시간 글로벌 마켓 현황 ═══ -->
     <div class="glass-card gradient-border">
       <div class="section-header">
         <div class="section-title">
-          <span class="title-icon">&#9881;</span> 매매 설정
+          <span class="title-icon">&#127760;</span> 글로벌 시장 현황 (실시간)
+        </div>
+        <span class="section-badge" id="globalMarketBadge" style="background:rgba(100,200,100,0.15);color:#7dffb3;">--</span>
+      </div>
+      <div id="globalMarketGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+        <!-- 동적 생성: 6개 시장 카드 -->
+      </div>
+    </div>
+
+    <!-- ═══ 24시간 자동 스케줄러 ═══ -->
+    <div class="glass-card" style="border:1px solid rgba(168,85,247,0.3);">
+      <div class="section-header">
+        <div class="section-title">
+          <span class="title-icon">&#128337;</span> 24시간 자동 스케줄러
+        </div>
+        <span class="section-badge" id="schedulerBadge" style="background:rgba(168,85,247,0.15);color:#c084fc;">비활성</span>
+      </div>
+      <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">
+        활성화하면 시장 시간에 맞춰 자동으로 매매를 시작/종료합니다.<br>
+        한국 마감 → 홍콩 → 미국으로 자동 로테이션됩니다.
+      </div>
+      <div style="margin-bottom:12px;">
+        <div class="form-label" style="margin-bottom:6px;">자동 매매 시장 선택</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;" id="schedulerMarkets">
+          <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-primary);cursor:pointer;">
+            <input type="checkbox" value="KR" checked> KR 한국 (09:00~15:30)
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-primary);cursor:pointer;">
+            <input type="checkbox" value="NASD" checked> NASD (23:30~06:00)
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-primary);cursor:pointer;">
+            <input type="checkbox" value="NYSE"> NYSE (23:30~06:00)
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-primary);cursor:pointer;">
+            <input type="checkbox" value="SEHK"> SEHK 홍콩 (10:30~17:00)
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-primary);cursor:pointer;">
+            <input type="checkbox" value="TKSE"> TKSE 일본 (09:00~15:00)
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-primary);cursor:pointer;">
+            <input type="checkbox" value="AMEX"> AMEX (23:30~06:00)
+          </label>
+        </div>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" id="btnSchedulerStart" onclick="startScheduler()" style="background:linear-gradient(135deg,#a78bfa,#6c8cff);">
+          &#128337; 24시간 자동 스케줄러 시작
+        </button>
+        <button class="btn btn-danger" id="btnSchedulerStop" onclick="stopScheduler()" disabled>
+          &#9724; 스케줄러 종료
+        </button>
+      </div>
+    </div>
+
+    <!-- ═══ 수동 매매 설정 ═══ -->
+    <div class="glass-card">
+      <div class="section-header">
+        <div class="section-title">
+          <span class="title-icon">&#9881;</span> 수동 매매 설정
         </div>
       </div>
 
-      <!-- Market pills -->
       <div class="form-group">
         <div class="form-label">마켓 선택</div>
         <div class="market-pills" id="tradeMarketPills">
@@ -1658,7 +1716,7 @@ body::after {
 
       <div class="form-group">
         <div class="form-label">감시 종목 (빈칸 = 자동 선정)</div>
-        <input class="form-input" id="tradeStocks" placeholder="예: 005930, 000660">
+        <input class="form-input" id="tradeStocks" placeholder="예: 005930, 000660 (해외: AAPL, TSLA)">
         <div class="form-hint">쉼표로 여러 종목코드를 입력할 수 있습니다</div>
       </div>
 
@@ -1952,7 +2010,11 @@ body::after {
 
       if (d.trading) {
         indicator.className = 'status-indicator active';
-        statusText.textContent = '매매중';
+        var mkt = d.active_market || 'KR';
+        statusText.textContent = '매매중 (' + mkt + ')';
+      } else if (d.scheduler_enabled) {
+        indicator.className = 'status-indicator active';
+        statusText.textContent = '스케줄러 대기';
       } else {
         indicator.className = 'status-indicator idle';
         statusText.textContent = '대기중';
@@ -2426,6 +2488,89 @@ body::after {
   /* ═══════════════════════════════════
      Trading
      ═══════════════════════════════════ */
+  /* ═══ Global Market Status ═══ */
+  function loadMarketStatus() {
+    fetch('/api/scheduler/status').then(function(r) { return r.json(); }).then(function(d) {
+      var grid = $('globalMarketGrid');
+      var ms = d.market_status || {};
+      var openCount = 0;
+      var html = '';
+      var order = ['KR', 'TKSE', 'SEHK', 'NASD', 'NYSE', 'AMEX'];
+      order.forEach(function(code) {
+        var m = ms[code];
+        if (!m) {
+          m = {name: code, open: false, trading: false, open_time: '--', close_time: '--', active: false};
+        }
+        var isOpen = m.open || m.trading;
+        if (isOpen) openCount++;
+        var borderColor = m.active ? 'var(--accent-cyan)' : isOpen ? 'rgba(100,200,100,0.4)' : 'rgba(255,255,255,0.08)';
+        var dotColor = m.active ? '#7dffb3' : isOpen ? '#34d399' : '#5c6190';
+        var statusText = m.active ? '매매 중' : m.liquidating ? '청산 중' : isOpen ? '개장' : '폐장';
+        html += '<div style="background:var(--bg-card);border-radius:10px;padding:10px;border:1px solid ' + borderColor + ';">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">' +
+          '<span style="font-weight:700;font-size:14px;color:var(--text-primary);">' + code + '</span>' +
+          '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';' + (isOpen ? 'animation:pulse 2s infinite;' : '') + '"></span></div>' +
+          '<div style="font-size:11px;color:var(--text-muted);">' + m.open_time + ' ~ ' + m.close_time + '</div>' +
+          '<div style="font-size:12px;margin-top:4px;color:' + dotColor + ';">' + statusText + '</div>' +
+          '</div>';
+      });
+      grid.innerHTML = html;
+      $('globalMarketBadge').textContent = openCount + '개 개장';
+
+      // 스케줄러 상태
+      if (d.running) {
+        $('schedulerBadge').textContent = '활성 (' + (d.active_market || '대기') + ')';
+        $('schedulerBadge').style.color = '#7dffb3';
+        $('schedulerBadge').style.background = 'rgba(100,200,100,0.15)';
+        $('btnSchedulerStart').disabled = true;
+        $('btnSchedulerStop').disabled = false;
+      } else {
+        $('schedulerBadge').textContent = '비활성';
+        $('schedulerBadge').style.color = '#c084fc';
+        $('schedulerBadge').style.background = 'rgba(168,85,247,0.15)';
+        $('btnSchedulerStart').disabled = false;
+        $('btnSchedulerStop').disabled = true;
+      }
+    }).catch(function() {});
+  }
+
+  /* Refresh market status every 10s */
+  setInterval(function() { if (currentPage === 'trading') loadMarketStatus(); }, 10000);
+  setTimeout(loadMarketStatus, 1000);
+
+  /* ═══ Scheduler Controls ═══ */
+  window.startScheduler = function() {
+    var checkboxes = document.querySelectorAll('#schedulerMarkets input[type=checkbox]:checked');
+    var markets = [];
+    checkboxes.forEach(function(cb) { markets.push(cb.value); });
+    if (markets.length === 0) {
+      showToast('최소 1개 시장을 선택하세요', 'error');
+      return;
+    }
+    var strategy = $('tradeStrategy').value;
+    var interval = $('tradeInterval').value;
+
+    fetch('/api/scheduler/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ markets: markets, strategy: strategy, interval: parseInt(interval) })
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.error) { showToast(d.error, 'error'); return; }
+      showToast('24시간 자동 스케줄러 시작! (' + markets.join(', ') + ')', 'success');
+      appendLog('[스케줄러] 24시간 자동 매매 시작 — 시장: ' + markets.join(', '));
+      loadMarketStatus();
+    }).catch(function(e) { showToast('스케줄러 시작 실패: ' + e.message, 'error'); });
+  };
+
+  window.stopScheduler = function() {
+    fetch('/api/scheduler/stop', { method: 'POST' }).then(function() {
+      showToast('스케줄러가 종료되었습니다', 'info');
+      appendLog('[스케줄러] 종료');
+      loadMarketStatus();
+    });
+  };
+
+  /* ═══ Manual Trading ═══ */
   window.startTrading = function() {
     var market = getSelectedMarket('tradeMarketPills');
     var stocks = $('tradeStocks').value;

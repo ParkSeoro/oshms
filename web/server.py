@@ -33,6 +33,8 @@ _state = {
     "logs": [],
     "settings": None,
     "api": None,  # KISApi 인스턴스 캐시 (토큰 재사용)
+    "scheduler": None,  # v4.2: MarketScheduler 인스턴스
+    "scheduler_enabled": False,
 }
 
 
@@ -118,11 +120,14 @@ def api_debug_env():
 def api_status():
     try:
         s = _get_settings()
+        trader = _state.get("trader")
         return jsonify({
             "trading": _state["trading"],
             "mock": s.is_mock,
             "account": f"{s.account_number}-{s.account_suffix}" if s.account_no else "",
             "api_configured": bool(s.app_key and s.app_secret),
+            "active_market": trader.market if trader else None,
+            "scheduler_enabled": _state.get("scheduler_enabled", False),
         })
     except Exception as e:
         return jsonify({
@@ -240,6 +245,7 @@ def api_trade_start():
     stocks = data.get("stocks", "")
     strategy_name = data.get("strategy", "expert")
     interval = int(data.get("interval", 10))
+    market = data.get("market", "KR")
 
     def _run():
         import logging
@@ -272,7 +278,7 @@ def api_trade_start():
             factory = strategy_map.get(strategy_name, strategy_map["expert"])
             strat = factory()
 
-            trader = AutoTrader(api, s, strat)
+            trader = AutoTrader(api, s, strat, market=market)
             _state["trader"] = trader
             _state["trading"] = True
 
@@ -289,7 +295,7 @@ def api_trade_start():
     thread.start()
     _state["thread"] = thread
 
-    return jsonify({"message": "자동매매 시작"})
+    return jsonify({"message": f"자동매매 시작 (시장: {market})"})
 
 
 @app.route("/api/trade/stop", methods=["POST"])
@@ -298,6 +304,126 @@ def api_trade_stop():
         _state["trader"].stop()
     _state["trading"] = False
     return jsonify({"message": "중지됨"})
+
+
+@app.route("/api/scheduler/start", methods=["POST"])
+def api_scheduler_start():
+    """24시간 멀티마켓 자동 스케줄러를 시작한다."""
+    data = request.json or {}
+    markets = data.get("markets", ["KR", "NASD"])
+    strategy_name = data.get("strategy", "expert")
+    interval = int(data.get("interval", 10))
+
+    from trading.market_scheduler import MarketScheduler
+
+    if _state.get("scheduler") and _state["scheduler_enabled"]:
+        return jsonify({"error": "스케줄러 이미 실행 중"}), 400
+
+    scheduler = MarketScheduler(enabled_markets=markets)
+
+    # ── 콜백: 시장 개장 시 자동 매매 시작 ──
+    def on_start_trading(market_code):
+        if _state["trading"]:
+            # 이미 다른 시장에서 매매 중 → 시장 전환
+            if _state["trader"]:
+                _state["trader"].set_market(market_code)
+                _state["logs"].append(f"[스케줄러] 시장 전환: {market_code}")
+            return
+        # 새로 매매 시작
+        _state["logs"].append(f"[스케줄러] {market_code} 시장 개장 → 자동매매 시작")
+        # POST로 자동 시작 — 기존 로직 재사용
+        import requests as _req
+        try:
+            _req.post(f"http://127.0.0.1:{_server_port}/api/trade/start",
+                      json={"market": market_code, "strategy": strategy_name,
+                            "interval": interval},
+                      timeout=5)
+        except Exception as e:
+            _state["logs"].append(f"[스케줄러] 매매 시작 실패: {e}")
+
+    # ── 콜백: 시장 마감 시 자동 매매 종료 ──
+    def on_stop_trading(market_code):
+        _state["logs"].append(f"[스케줄러] {market_code} 시장 마감 → 매매 종료")
+        if _state["trader"]:
+            _state["trader"].stop()
+
+    # ── 콜백: 청산 ──
+    def on_liquidate(market_code):
+        _state["logs"].append(f"[스케줄러] {market_code} 청산 시간 → 포지션 청산 시작")
+
+    scheduler.set_callback("start_trading", on_start_trading)
+    scheduler.set_callback("stop_trading", on_stop_trading)
+    scheduler.set_callback("liquidate", on_liquidate)
+    scheduler.start()
+
+    _state["scheduler"] = scheduler
+    _state["scheduler_enabled"] = True
+
+    return jsonify({
+        "message": "24시간 자동 스케줄러 시작",
+        "markets": markets,
+    })
+
+
+@app.route("/api/scheduler/stop", methods=["POST"])
+def api_scheduler_stop():
+    """스케줄러를 종료한다."""
+    if _state.get("scheduler"):
+        _state["scheduler"].stop()
+        _state["scheduler"] = None
+    _state["scheduler_enabled"] = False
+
+    # 매매도 함께 종료
+    if _state["trader"]:
+        _state["trader"].stop()
+
+    return jsonify({"message": "스케줄러 종료"})
+
+
+@app.route("/api/scheduler/status")
+def api_scheduler_status():
+    """스케줄러 현재 상태."""
+    from trading.market_scheduler import MARKETS, is_market_open, is_trading_time
+
+    scheduler = _state.get("scheduler")
+    if scheduler and _state["scheduler_enabled"]:
+        return jsonify(scheduler.get_status())
+
+    # 스케줄러 미실행 시에도 시장 상태는 보여줌
+    from datetime import datetime
+    now_str = datetime.now().strftime("%H:%M")
+    market_status = {}
+    for code, m in MARKETS.items():
+        market_status[code] = {
+            "name": m.name,
+            "open": is_market_open(m, now_str),
+            "trading": is_trading_time(m, now_str),
+            "open_time": m.open_time,
+            "close_time": m.close_time,
+            "active": False,
+            "is_overseas": m.is_overseas,
+        }
+
+    return jsonify({
+        "running": False,
+        "active_market": None,
+        "enabled_markets": [],
+        "market_status": market_status,
+    })
+
+
+@app.route("/api/scheduler/markets", methods=["POST"])
+def api_scheduler_update_markets():
+    """활성 시장 목록을 업데이트한다."""
+    data = request.json or {}
+    markets = data.get("markets", [])
+    if _state.get("scheduler"):
+        _state["scheduler"].update_enabled_markets(markets)
+    return jsonify({"markets": markets})
+
+
+# 서버 포트 (스케줄러 콜백에서 사용)
+_server_port = 5000
 
 
 @app.route("/api/logs")
@@ -716,6 +842,7 @@ def _find_available_port(start_port: int = 5000, max_tries: int = 10) -> int:
 
 def run_server(host="0.0.0.0", port=5000, debug=False):
     """웹 서버를 실행한다."""
+    global _server_port
     import socket
     import webbrowser
 
@@ -759,6 +886,7 @@ def run_server(host="0.0.0.0", port=5000, debug=False):
     except Exception:
         pass
 
+    _server_port = port
     app.run(host=host, port=port, debug=debug, threaded=True)
 
 
