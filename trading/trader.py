@@ -52,10 +52,12 @@ class AutoTrader:
         self._evolution = None
         self._trades_since_evolution = 0
         self._evolution_enabled = True
+        self._last_evolution_time: float = 0  # v4.1: 시간 기반 진화 트리거
 
         # 코드 진화 엔진 (Level 1~3: 프로그램 자체 진화)
         self._code_evolution = None
         self._trades_since_code_evolution = 0
+        self._last_code_evolution_time: float = 0  # v4.1: 시간 기반 진화 트리거
 
         # 종목 선정 캐시 (5분마다 갱신)
         self._stock_cache: list[str] = []
@@ -242,17 +244,33 @@ class AutoTrader:
         except Exception:
             return 0
 
+    _EVOLUTION_TIME_FALLBACK = 1800  # 30분마다 시간 기반 진화 (거래 없어도 실행)
+
     def _try_evolve(self):
-        """진화 조건 충족 시 진화 사이클을 실행한다."""
+        """진화 조건 충족 시 진화 사이클을 실행한다.
+
+        v4.1: 거래 수 기반 + 시간 기반 듀얼 트리거.
+        거래가 없어도 30분마다 진화 사이클이 돌아간다.
+        """
         if not self._evolution or not self._evolution_enabled:
             return
-        if not self._evolution.should_evolve(self._trades_since_evolution):
+
+        now = time.time()
+        trade_trigger = self._evolution.should_evolve(self._trades_since_evolution)
+        time_trigger = (now - self._last_evolution_time) >= self._EVOLUTION_TIME_FALLBACK
+
+        if not trade_trigger and not time_trigger:
             if self._cycle_count % 10 == 0:
-                logger.debug("파라미터 진화 대기: %d/%d건",
-                             self._trades_since_evolution, self._evolution.EVOLUTION_INTERVAL)
+                remaining_time = max(0, self._EVOLUTION_TIME_FALLBACK - (now - self._last_evolution_time))
+                logger.debug("파라미터 진화 대기: %d/%d건 또는 %.0f초 후",
+                             self._trades_since_evolution, self._evolution.EVOLUTION_INTERVAL,
+                             remaining_time)
             return
 
-        logger.info("진화 조건 충족 (%d건 거래) - 진화 사이클 시작", self._trades_since_evolution)
+        trigger_reason = "거래" if trade_trigger else "시간(30분)"
+        logger.info("진화 조건 충족 (%s, %d건 거래) - 진화 사이클 시작",
+                     trigger_reason, self._trades_since_evolution)
+        self._last_evolution_time = time.time()
         try:
             trades = self._load_trades()
             if not trades:
@@ -313,18 +331,32 @@ class AutoTrader:
         except Exception as e:
             logger.error("진화 실행 실패: %s", e)
 
+    _CODE_EVOLUTION_TIME_FALLBACK = 2400  # 40분마다 코드 진화 (거래 없어도 실행)
+
     def _try_code_evolution(self):
-        """코드 진화 엔진을 실행한다 (프로그램 자체 진화)."""
+        """코드 진화 엔진을 실행한다 (프로그램 자체 진화).
+
+        v4.1: 거래 수 기반 + 시간 기반 듀얼 트리거.
+        """
         if not self._code_evolution:
             return
-        if not self._code_evolution.should_evolve(self._trades_since_code_evolution):
+
+        now = time.time()
+        trade_trigger = self._code_evolution.should_evolve(self._trades_since_code_evolution)
+        time_trigger = (now - self._last_code_evolution_time) >= self._CODE_EVOLUTION_TIME_FALLBACK
+
+        if not trade_trigger and not time_trigger:
             if self._cycle_count % 10 == 0:
-                logger.debug("코드 진화 대기: %d/%d건",
-                             self._trades_since_code_evolution, self._code_evolution.CYCLE_INTERVAL)
+                remaining_time = max(0, self._CODE_EVOLUTION_TIME_FALLBACK - (now - self._last_code_evolution_time))
+                logger.debug("코드 진화 대기: %d/%d건 또는 %.0f초 후",
+                             self._trades_since_code_evolution, self._code_evolution.CYCLE_INTERVAL,
+                             remaining_time)
             return
 
-        logger.info("코드 진화 조건 충족 (%d건) — 자체 진화 사이클 시작",
-                     self._trades_since_code_evolution)
+        trigger_reason = "거래" if trade_trigger else "시간(40분)"
+        logger.info("코드 진화 조건 충족 (%s, %d건) — 자체 진화 사이클 시작",
+                     trigger_reason, self._trades_since_code_evolution)
+        self._last_code_evolution_time = time.time()
         try:
             trades = self._load_trades()
             if not trades:
@@ -948,51 +980,46 @@ class AutoTrader:
                 logger.debug("[%s] 모멘텀 스캔 오류: %s", stock_code, e)
 
     def _analyze_and_trade(self, stock_code: str) -> None:
-        """종목을 분석하고 매매를 실행한다."""
-        # 쿨다운 확인
-        if stock_code in self._cooldown_stocks:
-            cooldown_until = self._cooldown_stocks[stock_code]
-            if time.time() < cooldown_until:
-                return
-            else:
-                del self._cooldown_stocks[stock_code]
+        """종목을 분석하고 매매를 실행한다.
 
-        # 시세 데이터 조회
+        v4.1 재설계: 단순명확한 3단계
+          1. 데이터 수집
+          2. 전략 분석 → BUY/SELL/HOLD 결정
+          3. 즉시 실행 (불필요한 재검증 제거)
+        """
+        # ── 1단계: 기본 검증 (데이터 + 용량) ──
+        if not self.order_manager.can_buy() and stock_code not in self.order_manager.positions:
+            return  # 매수 불가 + 보유도 아님 → 분석 불필요
+
+        if stock_code in self._cooldown_stocks:
+            if time.time() < self._cooldown_stocks[stock_code]:
+                return
+            del self._cooldown_stocks[stock_code]
+
         current_price = self.api.get_current_price(stock_code)
-        if not current_price:
+        if not current_price or not current_price.get("price"):
             return
 
-        # 멀티 타임프레임: 분봉 + 일봉 모두 수집
         candles = self.api.get_minute_chart(stock_code, period="3")
         if len(candles) < 20:
             candles = self.api.get_daily_chart(stock_code, count=60)
-
         if not candles:
             return
 
-        # Expert 모드: full_analysis를 한 번만 호출하여 signal도 직접 생성
+        # ── 2단계: 전략 분석 (한 번만) ──
+        stock_name = current_price.get("stock_name", stock_code)
         atr_value = 0.0
+
         if isinstance(self.strategy, ExpertStrategy):
             analysis = self.strategy.full_analysis(
-                stock_code,
-                current_price.get("stock_name", stock_code),
-                candles,
-                current_price,
-            )
+                stock_code, stock_name, candles, current_price)
             if analysis.technical:
                 atr_value = analysis.technical.atr
 
             if analysis.decision != "HOLD":
                 logger.info("\n%s", analysis.summary())
-            elif self._cycle_count % 5 == 1:
-                logger.info(
-                    "[%s] %s원 | 점수=%.3f 신뢰도=%.0f%% → HOLD",
-                    current_price.get("stock_name", stock_code),
-                    f"{current_price['price']:,}",
-                    analysis.total_score, analysis.confidence * 100,
-                )
 
-            # full_analysis 결과로 직접 Signal 생성
+            # Signal 생성
             if analysis.decision in ("STRONG_BUY", "BUY"):
                 signal_type = SignalType.BUY
             elif analysis.decision in ("STRONG_SELL", "SELL"):
@@ -1006,264 +1033,57 @@ class AutoTrader:
                 stock_code=stock_code,
                 reason=reason_str,
                 strength=analysis.confidence,
+                target_price=getattr(analysis, '_target_price', 0),
             )
         else:
             signal = self.strategy.analyze(stock_code, candles, current_price)
 
-        # ── 매수 로직 ──
+        # ── 3단계: 즉시 실행 ──
+
+        # 매수: 전략이 BUY 결정 + 보유 가능 → 바로 실행
         if signal.signal_type == SignalType.BUY:
-            if not self.order_manager.can_buy():
-                return
             if stock_code in self.order_manager.positions:
                 return
+            if not self.order_manager.can_buy():
+                return
 
-            # v2.9: 멀티 타임프레임 확인 (분봉+일봉 동시 확인)
-            if isinstance(self.strategy, ExpertStrategy):
-                try:
-                    daily = self.api.get_daily_chart(stock_code, count=60)
-                    if daily and candles and len(daily) >= 20:
-                        mtf = self.strategy.multi_timeframe_confirm(
-                            stock_code, candles, daily, current_price)
-                        adj = mtf.get("strength_adj", 0)
-                        if adj != 0:
-                            old_str = signal.strength
-                            signal = Signal(
-                                signal_type=signal.signal_type,
-                                stock_code=signal.stock_code,
-                                reason=signal.reason,
-                                strength=max(0, min(1.0, signal.strength + adj)),
-                                target_price=signal.target_price,
-                            )
-                            if adj > 0.1:
-                                logger.info("  📊 멀티TF 강화: %.2f→%.2f | %s",
-                                            old_str, signal.strength, mtf["reason"])
-                            elif adj < -0.05:
-                                logger.info("  📊 멀티TF 약화: %.2f→%.2f | %s",
-                                            old_str, signal.strength, mtf["reason"])
-                except Exception as e:
-                    logger.debug("멀티TF 확인 실패: %s", e)
+            target_price = getattr(signal, "target_price", 0) or 0
+            estimated_upside = 0.0
+            if target_price > 0 and current_price["price"] > 0:
+                estimated_upside = (target_price - current_price["price"]) / current_price["price"] * 100
 
-            stock_name = current_price.get("stock_name", stock_code)
             logger.info(
-                "▶ 매수 신호: %s(%s) 가격=%s 강도=%.2f | %s",
-                stock_name, stock_code,
-                f"{current_price['price']:,}",
+                "▶ 매수 실행: %s(%s) %s원 | 강도=%.2f | %s",
+                stock_name, stock_code, f"{current_price['price']:,}",
                 signal.strength, signal.reason,
             )
 
-            # v4.0: 소액 빈번 거래 — 매수 문턱 낮춤 (레짐 조정 축소)
-            min_strength = 0.12 if isinstance(self.strategy, ExpertStrategy) else 0.15
-            regime_buy_adj = self._regime_adj.get("buy_threshold_adj", 0)
-            if regime_buy_adj:
-                min_strength = max(0.08, min_strength + regime_buy_adj * 0.3)
+            self.order_manager.execute_buy(
+                stock_code, stock_name, current_price["price"], signal.reason,
+                strength=signal.strength, atr=atr_value,
+                target_price=target_price, estimated_upside=estimated_upside,
+                per=current_price.get("per", 0),
+                pbr=current_price.get("pbr", 0),
+            )
 
-            # v2.9: 패턴 메모리 보강 (유사 패턴 승률로 강도 보정)
-            if self._evolution and isinstance(self.strategy, ExpertStrategy):
-                try:
-                    snap = {
-                        "trend_score": analysis.technical_score if 'analysis' in dir() else 0,
-                        "momentum_score": analysis.pattern_score if 'analysis' in dir() else 0,
-                        "rsi": analysis.technical.rsi if 'analysis' in dir() and analysis.technical else 50,
-                        "bb_position": analysis.technical.bb_position if 'analysis' in dir() and analysis.technical else 0.5,
-                        "volume_ratio": analysis.technical.volume_ratio if 'analysis' in dir() and analysis.technical else 1.0,
-                    }
-                    recall = self._evolution.recall_similar_patterns(snap)
-                    if recall["matches"] >= 3:
-                        if recall["bias"] == "bullish" and recall["confidence"] > 0.5:
-                            signal = Signal(
-                                signal_type=signal.signal_type,
-                                stock_code=signal.stock_code,
-                                reason=signal.reason,
-                                strength=min(1.0, signal.strength + 0.08),
-                                target_price=signal.target_price,
-                            )
-                            logger.info(
-                                "  📚 패턴메모리 강화: +0.08 (유사%d건, 승률=%.0f%%)",
-                                recall["matches"], recall["win_rate"],
-                            )
-                        elif recall["bias"] == "bearish" and recall["confidence"] > 0.7:
-                            # v4.0: 0.5→0.7 (높은 확신에서만 차단, 전체 하락장 대응)
-                            logger.info(
-                                "  📚 패턴메모리 경고: 유사패턴 손실 (승률=%.0f%%) → 매수 보류",
-                                recall["win_rate"],
-                            )
-                            return
-                except Exception:
-                    pass
-
-            # v3.2: Q-Learning 신뢰도 보정
-            if self._q_agent and isinstance(self.strategy, ExpertStrategy):
-                try:
-                    q_snap = {
-                        "regime": self._market_ctx.regime if self._market_ctx else "ranging",
-                        "rsi": analysis.technical.rsi if 'analysis' in dir() and analysis.technical else 50,
-                        "trend_score": analysis.technical.trend_score if 'analysis' in dir() and analysis.technical else 0,
-                        "volume_ratio": analysis.technical.volume_ratio if 'analysis' in dir() and analysis.technical else 1.0,
-                    }
-                    q_modifier = self._q_agent.get_confidence_modifier(q_snap)
-                    if q_modifier != 0:
-                        old_str = signal.strength
-                        signal = Signal(
-                            signal_type=signal.signal_type,
-                            stock_code=signal.stock_code,
-                            reason=signal.reason,
-                            strength=max(0, min(1.0, signal.strength + q_modifier)),
-                            target_price=signal.target_price,
-                        )
-                        if abs(q_modifier) > 0.05:
-                            logger.info(
-                                "  🧠 Q-Learning 보정: %.2f→%.2f (%+.3f)",
-                                old_str, signal.strength, q_modifier,
-                            )
-                except Exception:
-                    pass
-
-            # v3.2: 포트폴리오 최적화 — 매수 차단 확인
-            portfolio_size_mult = 1.0
-            if self._portfolio_optimizer:
-                try:
-                    blocked, block_reason = self._portfolio_optimizer.should_block_buy(
-                        stock_code, self.order_manager.positions)
-                    if blocked:
-                        logger.info("  📊 포트폴리오 매수 차단: %s", block_reason)
-                        return
-                    portfolio_size_mult = self._portfolio_optimizer.get_position_size_multiplier(
-                        stock_code)
-                    if portfolio_size_mult != 1.0:
-                        logger.debug("  📊 포트폴리오 사이즈 승수: %.2f", portfolio_size_mult)
-                except Exception:
-                    pass
-
-            if signal.strength >= min_strength:
-                # 목표가 및 상승여력 계산
-                target_price = getattr(signal, "target_price", 0) or 0
-                estimated_upside = 0.0
-                if target_price > 0 and current_price["price"] > 0:
-                    estimated_upside = (target_price - current_price["price"]) / current_price["price"] * 100
-
-                logger.info(
-                    "  목표가=%s원 (상승여력=%.1f%%)",
-                    f"{target_price:,}" if target_price else "미정",
-                    estimated_upside,
-                )
-
-                # v3.3: 동적 비중 조절 (확신도 + 시장 심리 기반)
-                confidence_mult = 1.0
-                if isinstance(self.strategy, ExpertStrategy) and 'analysis' in dir():
-                    try:
-                        confidence_mult = self.strategy.get_confidence_size_mult(analysis)
-                        if confidence_mult != 1.0:
-                            logger.info("  동적 비중: %.2f (확신도+심리)", confidence_mult)
-                    except Exception:
-                        pass
-                final_size_mult = portfolio_size_mult * confidence_mult
-
-                self.order_manager.execute_buy(
-                    stock_code, stock_name, current_price["price"], signal.reason,
-                    strength=signal.strength, atr=atr_value,
-                    target_price=target_price, estimated_upside=estimated_upside,
-                    per=current_price.get("per", 0),
-                    pbr=current_price.get("pbr", 0),
-                    size_mult=final_size_mult,
-                )
-
-                # v3.2: Q-Learning 매수 상태 기록
-                if self._q_agent:
-                    try:
-                        self._q_agent.record_buy(stock_code, q_snap if 'q_snap' in dir() else {})
-                    except Exception:
-                        pass
-            else:
-                logger.debug(
-                    "  → 매수 신호 강도 부족: %.2f < %.2f (패스)", signal.strength, min_strength,
-                )
-
-        # ── 매도 로직 (분석 기반 목표가 도달 판단) ──
+        # 매도: 전략이 SELL 결정 + 보유 중 + 매도 적합 → 바로 실행
         elif signal.signal_type == SignalType.SELL:
             if stock_code in self.order_manager.positions:
                 pos = self.order_manager.positions[stock_code]
-                logger.info(
-                    "▶ 매도 신호: %s(%s) 가격=%s 수익률=%.2f%% 목표가=%s 강도=%.2f | %s",
-                    pos.stock_name, stock_code,
-                    f"{current_price['price']:,}",
-                    pos.profit_rate,
-                    f"{pos.target_price:,}" if pos.target_price else "미정",
-                    signal.strength, signal.reason,
-                )
-
-                # 손실 중이면 회복 대기 (손절은 _check_risk_management에서 처리)
-                if pos.profit_rate <= 0:
-                    logger.info("  → 손실 중(%.2f%%) — 회복 대기 (손절만 작동)", pos.profit_rate)
-                    return
-
-                # ── 최소 수익 검증 (5-10원 매도 방지) ──
                 sell_worthy, worthy_reason = self.order_manager.is_sell_worthy(stock_code)
-                if not sell_worthy and pos.profit_rate > 0:
-                    logger.info(
-                        "  → 매도 보류: %s (%s %+.2f%% %+,d원) — 수익 충분히 키우기",
-                        worthy_reason, pos.stock_name, pos.profit_rate, pos.profit_loss,
-                    )
-                    return
-
-                # ── 상승여력 재분석 ──
-                should_sell = False
-                sell_reason = signal.reason
-
-                if isinstance(self.strategy, ExpertStrategy):
-                    upside = self.strategy.estimate_upside(stock_code, candles, current_price)
-
-                    # 목표가 갱신 (분석 결과가 더 높으면 상향)
-                    if upside["target_price"] > pos.target_price:
-                        old_target = pos.target_price
-                        pos.target_price = upside["target_price"]
-                        pos.estimated_upside = upside["upside_pct"]
-                        logger.info(
-                            "  📈 목표가 상향: %s → %s원 (상승여력=%.1f%%)",
-                            f"{old_target:,}" if old_target else "미정",
-                            f"{pos.target_price:,}", upside["upside_pct"],
-                        )
-
-                    if upside["should_hold"]:
-                        # 아직 상승여력이 남아있으면 홀딩
-                        logger.info(
-                            "  → 홀딩 유지: 상승여력=%.1f%% 모멘텀=%.2f 추세=%s | %s",
-                            upside["upside_pct"], upside["momentum_score"],
-                            "살아있음" if upside["trend_alive"] else "약화",
-                            upside["reason"],
-                        )
-                    else:
-                        # 추세 소진 → 매도 (단, 최소 수익 이상일 때만)
-                        if pos.profit_rate >= self.order_manager.MIN_SELL_PROFIT_PCT:
-                            should_sell = True
-                            sell_reason = f"추세소진(수익={pos.profit_rate:.1f}%, 여력={upside['upside_pct']:.1f}%) | {upside['reason']}"
-                            logger.info(
-                                "  → 추세 소진 + 수익 충분: %.1f%% (%+,d원) → 매도 실행",
-                                pos.profit_rate, pos.profit_loss,
-                            )
-                        else:
-                            logger.info(
-                                "  → 추세 소진이나 수익 부족: %.2f%% (%+,d원) — 홀딩 유지",
-                                pos.profit_rate, pos.profit_loss,
-                            )
-                else:
-                    # Expert가 아닌 전략: 수익 2% 이상 + 매도 신호
-                    if pos.profit_rate > 2.0 and signal.strength >= 0.15:
-                        should_sell = True
-
-                # ── 목표가 도달 확인 (무조건 매도) ──
-                if pos.target_price > 0 and current_price["price"] >= pos.target_price:
-                    should_sell = True
-                    sell_reason = f"목표가 도달({pos.target_price:,}원) 수익률={pos.profit_rate:.1f}%"
-                    logger.info(
-                        "  🎯 목표가 도달! %s원 >= %s원 → 매도",
-                        f"{current_price['price']:,}", f"{pos.target_price:,}",
-                    )
-
-                # ── 매도 실행 ──
-                if should_sell:
+                if sell_worthy:
                     pr = pos.profit_rate
-                    self.order_manager.execute_sell(stock_code, sell_reason)
+                    logger.info(
+                        "▶ 매도 실행: %s(%s) 수익=%.1f%% | %s",
+                        stock_name, stock_code, pr, signal.reason,
+                    )
+                    self.order_manager.execute_sell(stock_code, signal.reason)
                     self._on_trade_completed(stock_code, pr, "SELL")
+                elif pos.profit_rate > 0:
+                    logger.info(
+                        "  매도 보류: %s (%s %.2f%%) — %s",
+                        stock_name, stock_code, pos.profit_rate, worthy_reason,
+                    )
 
     def _log_status(self) -> None:
         """현재 상태를 로그에 출력한다."""
