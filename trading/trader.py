@@ -274,8 +274,12 @@ class AutoTrader:
         try:
             trades = self._load_trades()
             if not trades:
-                logger.warning("진화 스킵: 거래 기록이 비어있음")
-                return
+                if time_trigger:
+                    logger.info("시간 기반 진화: 거래 기록 없이 기본 진화 실행")
+                    trades = []  # 빈 거래 기록으로도 진화 시도
+                else:
+                    logger.warning("진화 스킵: 거래 기록이 비어있음")
+                    return
 
             # 캔들 데이터 — 보유 종목 또는 최근 거래 종목에서 가져오기
             candles = None
@@ -360,8 +364,12 @@ class AutoTrader:
         try:
             trades = self._load_trades()
             if not trades:
-                logger.warning("코드 진화 스킵: 거래 기록이 비어있음")
-                return
+                if time_trigger:
+                    logger.info("시간 기반 코드 진화: 거래 기록 없이 기본 진화 실행")
+                    trades = []
+                else:
+                    logger.warning("코드 진화 스킵: 거래 기록이 비어있음")
+                    return
 
             candles = None
             held_codes = list(self.order_manager.positions.keys())
@@ -733,6 +741,22 @@ class AutoTrader:
                 self._on_trade_completed(code, pr, "SELL")
             except Exception as e:
                 logger.error("[%s] 손절 매도 실패: %s", code, e)
+
+        # ── 3.5 익절 매도 (v4.2: 누락 수정 — 수익 3%+ 확정 익절) ──
+        for code in self.order_manager.check_take_profit():
+            try:
+                pos = self.order_manager.positions.get(code)
+                if not pos:
+                    continue
+                pr = pos.profit_rate
+                logger.info(
+                    "💰 익절 실행: %s(%s) 수익률=%.2f%% → 수익 확정",
+                    pos.stock_name, code, pr,
+                )
+                self.order_manager.execute_sell(code, f"익절({pr:.1f}%)")
+                self._on_trade_completed(code, pr, "SELL")
+            except Exception as e:
+                logger.error("[%s] 익절 매도 실패: %s", code, e)
 
         # ── 4. 장마감 처리 (15:20 이후 — v4.0: 당일 전량 청산, 오버나이트 리스크 제거) ──
         now_str = datetime.now().strftime("%H:%M")
