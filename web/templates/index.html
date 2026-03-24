@@ -1494,6 +1494,58 @@ body::after {
         </table>
       </div>
     </div>
+
+    <!-- Evolution Engine Status -->
+    <div class="glass-card">
+      <div class="section-header">
+        <div class="section-title">
+          <span class="title-icon">&#129504;</span> 진화 엔진 상태
+        </div>
+        <span class="section-badge" id="evoBadge">--</span>
+      </div>
+      <div id="evoDetails" style="font-size:13px;color:var(--text-secondary);line-height:1.7;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;">
+          <div>파라미터 진화 세대: <strong id="evoGenDetail">--</strong></div>
+          <div>최고 적합도: <strong id="evoBestFitness">--</strong></div>
+          <div>활성 매매 규칙: <strong id="evoActiveRules">--</strong>개</div>
+          <div>코드 진화 사이클: <strong id="evoCodeCycle">--</strong></div>
+          <div>코드 진화 개선: <strong id="evoCodeImprove">--</strong>건</div>
+          <div>총 거래 수: <strong id="evoTotalTrades">--</strong></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- v3.2 Advanced Features -->
+    <div class="glass-card">
+      <div class="section-header">
+        <div class="section-title">
+          <span class="title-icon">&#128161;</span> v3.2 고급 기능
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <!-- Ensemble -->
+        <div style="background:var(--bg-card);border-radius:12px;padding:12px;">
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">전략 앙상블</div>
+          <div style="font-size:14px;color:var(--text-primary);" id="v32Ensemble">로딩 중...</div>
+        </div>
+        <!-- Q-Learning -->
+        <div style="background:var(--bg-card);border-radius:12px;padding:12px;">
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">Q-Learning</div>
+          <div style="font-size:14px;color:var(--text-primary);" id="v32QLearning">로딩 중...</div>
+        </div>
+        <!-- Portfolio -->
+        <div style="background:var(--bg-card);border-radius:12px;padding:12px;">
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">포트폴리오 최적화</div>
+          <div style="font-size:14px;color:var(--text-primary);" id="v32Portfolio">로딩 중...</div>
+        </div>
+        <!-- Trade Review -->
+        <div style="background:var(--bg-card);border-radius:12px;padding:12px;">
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">매매 복기</div>
+          <div style="font-size:14px;color:var(--text-primary);" id="v32Review">로딩 중...</div>
+        </div>
+      </div>
+    </div>
+
   </section>
 
   <!-- ════════════════════════════════════════════════════════
@@ -1872,8 +1924,17 @@ body::after {
           var cumEl = $('dCumProfit');
           cumEl.textContent = plSign(cumP) + fmtWon(cumP);
           cumEl.className = 'mini-value ' + plClass(cumP);
-          $('dEvoGen').textContent = rs.generation || rs.evo_generation || '--';
+          var gen = rs.generation || rs.evo_generation || 0;
+          $('dEvoGen').textContent = gen;
+          $('evoGenDetail').textContent = '#' + gen;
+          $('evoBestFitness').textContent = rs.best_fitness != null ? rs.best_fitness.toFixed(1) : '--';
+          $('evoActiveRules').textContent = rs.active_rules || 0;
+          $('evoCodeCycle').textContent = '#' + (rs.code_evolution_cycle || 0);
+          $('evoCodeImprove').textContent = rs.code_evolution_improvements || 0;
+          $('evoTotalTrades').textContent = fmt(rs.total_trades || 0);
+          $('evoBadge').textContent = '세대 #' + gen;
         }
+        loadV32Features();
         // 최근 거래 기록도 표시
         if (report && report.daily && report.daily.length) {
           var recentBody = $('recentTradesBody');
@@ -1942,7 +2003,7 @@ body::after {
         tbody.innerHTML = rows;
       }
 
-      /* Report / cumulative stats */
+      /* Report / cumulative stats + evolution details */
       if (report && report.summary) {
         var rs = report.summary;
         $('dTotalTrades').textContent = fmt(rs.total_trades || 0);
@@ -1951,7 +2012,17 @@ body::after {
         var cumEl = $('dCumProfit');
         cumEl.textContent = plSign(cumP) + fmtWon(cumP);
         cumEl.className = 'mini-value ' + plClass(cumP);
-        $('dEvoGen').textContent = rs.generation || rs.evo_generation || '--';
+        var gen = rs.generation || rs.evo_generation || 0;
+        $('dEvoGen').textContent = gen;
+
+        /* Evolution engine details */
+        $('evoGenDetail').textContent = '#' + gen;
+        $('evoBestFitness').textContent = rs.best_fitness != null ? rs.best_fitness.toFixed(1) : '--';
+        $('evoActiveRules').textContent = rs.active_rules || 0;
+        $('evoCodeCycle').textContent = '#' + (rs.code_evolution_cycle || 0);
+        $('evoCodeImprove').textContent = rs.code_evolution_improvements || 0;
+        $('evoTotalTrades').textContent = fmt(rs.total_trades || 0);
+        $('evoBadge').textContent = '세대 #' + gen;
       }
 
       /* Recent trades from report */
@@ -1982,6 +2053,46 @@ body::after {
     });
   };
 
+  /* v3.2 features load */
+  function loadV32Features() {
+    // Ensemble
+    fetch('/api/v32/ensemble').then(function(r) { return r.json(); }).then(function(d) {
+      if (d.error) { $('v32Ensemble').textContent = '미활성'; return; }
+      var weights = d.weights || d.dynamic_weights || {};
+      var parts = [];
+      for (var k in weights) { parts.push(k + ' ' + ((weights[k] || 0) * 100).toFixed(0) + '%'); }
+      $('v32Ensemble').innerHTML = parts.length ? parts.join('<br>') : '활성 (가중치 미설정)';
+    }).catch(function() { $('v32Ensemble').textContent = '미활성'; });
+
+    // Q-Learning
+    fetch('/api/v32/qlearning').then(function(r) { return r.json(); }).then(function(d) {
+      if (d.error) { $('v32QLearning').textContent = '미활성'; return; }
+      var states = d.total_states || 0;
+      var updates = d.total_updates || 0;
+      $('v32QLearning').innerHTML = '상태 ' + states + '개<br>학습 ' + updates + '회';
+    }).catch(function() { $('v32QLearning').textContent = '미활성'; });
+
+    // Portfolio
+    fetch('/api/v32/portfolio').then(function(r) { return r.json(); }).then(function(d) {
+      if (d.error) { $('v32Portfolio').textContent = '미활성'; return; }
+      var sharpe = d.sharpe_ratio;
+      $('v32Portfolio').innerHTML = sharpe != null ? 'Sharpe ' + sharpe.toFixed(2) : '활성';
+    }).catch(function() { $('v32Portfolio').textContent = '미활성'; });
+
+    // Trade Review
+    fetch('/api/v32/evolution').then(function(r) { return r.json(); }).then(function(d) {
+      if (d.error) { $('v32Review').textContent = '미활성'; return; }
+      var cycle = d.cycle || 0;
+      var improvements = d.total_improvements || 0;
+      var review = d.review_report;
+      if (review && review.total_reviewed) {
+        $('v32Review').innerHTML = '복기 ' + review.total_reviewed + '건<br>패턴 ' + (review.patterns_found || 0) + '개';
+      } else {
+        $('v32Review').innerHTML = '사이클 #' + cycle + '<br>개선 ' + improvements + '건';
+      }
+    }).catch(function() { $('v32Review').textContent = '미활성'; });
+  }
+
   /* Auto-refresh dashboard every 30s */
   setInterval(function() {
     if (currentPage === 'dashboard') {
@@ -1990,7 +2101,9 @@ body::after {
   }, 30000);
 
   /* Initial load */
-  setTimeout(function() { window.refreshDashboard(); }, 500);
+  setTimeout(function() { window.refreshDashboard(); loadV32Features(); }, 500);
+  /* v3.2 features refresh every 60s */
+  setInterval(function() { if (currentPage === 'dashboard') loadV32Features(); }, 60000);
 
   /* ═══════════════════════════════════
      Trading
