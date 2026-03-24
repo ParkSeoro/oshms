@@ -66,6 +66,54 @@ def index():
 
 # ─────────────────── REST API ───────────────────
 
+@app.route("/api/debug/env")
+def api_debug_env():
+    """디버그: .env 파일 상태 확인 (키 값은 마스킹)."""
+    import os
+    env_path = Path(".env")
+    result = {
+        "env_exists": env_path.exists(),
+        "env_path": str(env_path.resolve()),
+        "working_dir": os.getcwd(),
+    }
+
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8").strip().split("\n")
+        env_parsed = {}
+        for line in lines:
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+                # 비밀 값은 마스킹
+                if "KEY" in k or "SECRET" in k:
+                    if v:
+                        env_parsed[k] = f"{v[:4]}***{v[-2:]} (길이={len(v)})"
+                    else:
+                        env_parsed[k] = "비어있음 ❌"
+                else:
+                    env_parsed[k] = v
+        result["env_values"] = env_parsed
+    else:
+        result["env_values"] = {}
+        result["error"] = ".env 파일이 없습니다"
+
+    # 현재 메모리에 로드된 설정과 비교
+    try:
+        s = _get_settings()
+        result["loaded_settings"] = {
+            "app_key": f"{s.app_key[:4]}*** (길이={len(s.app_key)})" if s.app_key else "비어있음 ❌",
+            "app_secret": f"{s.app_secret[:4]}*** (길이={len(s.app_secret)})" if s.app_secret else "비어있음 ❌",
+            "account_no": s.account_no or "비어있음",
+            "is_mock": s.is_mock,
+            "base_url": s.base_url,
+        }
+    except Exception as e:
+        result["loaded_settings_error"] = str(e)
+
+    return jsonify(result)
+
+
 @app.route("/api/status")
 def api_status():
     try:

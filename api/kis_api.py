@@ -53,18 +53,51 @@ class KISApi:
     def _issue_token(self) -> None:
         """OAuth 액세스 토큰을 발급받는다."""
         url = f"{self.base_url}/oauth2/tokenP"
+
+        # 키 유효성 사전 검증
+        app_key = self.settings.app_key
+        app_secret = self.settings.app_secret
+        mode = "모의투자" if self.settings.is_mock else "실전투자"
+
+        if not app_key or not app_secret:
+            key_status = f"APP_KEY={'설정됨' if app_key else '비어있음'}, APP_SECRET={'설정됨' if app_secret else '비어있음'}"
+            logger.error("토큰 발급 불가: API 키가 비어있음 (%s) — .env 파일을 확인하세요", key_status)
+            raise ConnectionError(
+                f"토큰 발급 실패: API 키가 설정되지 않았습니다\n\n"
+                f"현재 모드: {mode}\n"
+                f"APP_KEY: {'설정됨' if app_key else '비어있음 ❌'}\n"
+                f"APP_SECRET: {'설정됨' if app_secret else '비어있음 ❌'}\n\n"
+                f".env 파일에 KIS_APP_KEY와 KIS_APP_SECRET을 입력하세요.\n"
+                f"또는 웹 UI 설정 탭에서 API 키를 입력하세요."
+            )
+
+        # 키 앞4자리만 로그 출력 (디버깅용)
+        logger.info("토큰 발급 시도: 모드=%s, KEY=%s***, URL=%s",
+                     mode, app_key[:4] if len(app_key) > 4 else "???", url)
+
         body = {
             "grant_type": "client_credentials",
-            "appkey": self.settings.app_key,
-            "appsecret": self.settings.app_secret,
+            "appkey": app_key,
+            "appsecret": app_secret,
         }
         resp = self.session.post(url, json=body, timeout=10)
 
         if resp.status_code == 403:
-            mode = "모의투자" if self.settings.is_mock else "실전투자"
+            # 응답 본문에서 추가 정보 추출
+            try:
+                err_body = resp.json()
+                err_msg = err_body.get("msg1", "") or err_body.get("message", "")
+            except Exception:
+                err_msg = resp.text[:200]
+
+            logger.error("토큰 발급 403: KEY=%s***, 모드=%s, 응답=%s",
+                         app_key[:4] if len(app_key) > 4 else "???", mode, err_msg)
             raise ConnectionError(
                 f"토큰 발급 실패 (403 Forbidden)\n\n"
                 f"현재 모드: {mode}\n"
+                f"APP_KEY: {app_key[:4]}*** (길이={len(app_key)})\n"
+                f"API URL: {url}\n"
+                f"서버 응답: {err_msg}\n\n"
                 f"확인 사항:\n"
                 f"1. APP KEY / APP SECRET이 {mode}용인지 확인\n"
                 f"2. 한국투자증권 KIS Developers에서 API 사용 신청 확인\n"
