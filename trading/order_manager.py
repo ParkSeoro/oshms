@@ -91,8 +91,14 @@ class OrderManager:
         self.TRADE_LOG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def sync_positions(self) -> None:
-        """API에서 실제 잔고를 동기화한다."""
-        balance = self.api.get_balance()
+        """API에서 실제 잔고를 동기화한다.
+
+        v4.2: 시장별 API 분기 — 해외 시장은 overseas balance API 사용.
+        """
+        if self.market != "KR":
+            balance = self.api.get_overseas_balance(self.market)
+        else:
+            balance = self.api.get_balance()
         synced = {}
         for h in balance.get("holdings", []):
             code = h["stock_code"]
@@ -116,12 +122,21 @@ class OrderManager:
         logger.info("포지션 동기화 완료: %d종목", len(self.positions))
 
     def update_prices(self) -> None:
-        """보유 종목의 현재가를 갱신한다."""
+        """보유 종목의 현재가를 갱신한다.
+
+        v4.2: 시장별 API 분기 — 해외 시장은 overseas API 사용.
+        """
         for code, pos in self.positions.items():
             try:
-                price_data = self.api.get_current_price(code)
+                if self.market != "KR":
+                    price_data = self.api.get_overseas_price(self.market, code)
+                else:
+                    price_data = self.api.get_current_price(code)
                 if price_data:
-                    pos.current_price = price_data["price"]
+                    price = price_data["price"]
+                    if isinstance(price, float):
+                        price = int(price) if price == int(price) else price
+                    pos.current_price = price
                     pos.highest_price = max(pos.highest_price, pos.current_price)
             except Exception as e:
                 logger.warning("[%s] 가격 갱신 실패: %s", code, e)

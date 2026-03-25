@@ -306,7 +306,11 @@ class AutoTrader:
                 held_codes = recent_codes[:1]
             if held_codes:
                 try:
-                    candles = self.api.get_daily_chart(held_codes[0], count=60)
+                    # v4.2: 시장별 API 분기
+                    if self.market != "KR":
+                        candles = self.api.get_overseas_daily_chart(self.market, held_codes[0], count=60)
+                    else:
+                        candles = self.api.get_daily_chart(held_codes[0], count=60)
                 except Exception:
                     pass
 
@@ -394,7 +398,11 @@ class AutoTrader:
                 held_codes = recent_codes[:1]
             if held_codes:
                 try:
-                    candles = self.api.get_daily_chart(held_codes[0], count=60)
+                    # v4.2: 시장별 API 분기
+                    if self.market != "KR":
+                        candles = self.api.get_overseas_daily_chart(self.market, held_codes[0], count=60)
+                    else:
+                        candles = self.api.get_daily_chart(held_codes[0], count=60)
                 except Exception:
                     pass
 
@@ -835,15 +843,23 @@ class AutoTrader:
                 continue  # 수익 종목만 재분석
 
             try:
-                current_price = self.api.get_current_price(code)
-                if not current_price:
-                    continue
-
-                candles = self.api.get_minute_chart(code, period="3")
-                if len(candles) < 20:
-                    candles = self.api.get_daily_chart(code, count=60)
-                if not candles:
-                    continue
+                # v4.2: 시장별 API 분기
+                if self.market != "KR":
+                    current_price = self.api.get_overseas_price(self.market, code)
+                    if not current_price:
+                        continue
+                    candles = self.api.get_overseas_daily_chart(self.market, code, count=60)
+                    if not candles:
+                        continue
+                else:
+                    current_price = self.api.get_current_price(code)
+                    if not current_price:
+                        continue
+                    candles = self.api.get_minute_chart(code, period="3")
+                    if len(candles) < 20:
+                        candles = self.api.get_daily_chart(code, count=60)
+                    if not candles:
+                        continue
 
                 upside = self.strategy.estimate_upside(code, candles, current_price)
 
@@ -920,8 +936,13 @@ class AutoTrader:
                 # 실시간 기술적 분석 스냅샷 수집
                 if isinstance(self.strategy, ExpertStrategy):
                     try:
-                        cp = self.api.get_current_price(stock_code)
-                        cs = self.api.get_minute_chart(stock_code, period="3")
+                        # v4.2: 시장별 API 분기
+                        if self.market != "KR":
+                            cp = self.api.get_overseas_price(self.market, stock_code)
+                            cs = self.api.get_overseas_daily_chart(self.market, stock_code, count=30)
+                        else:
+                            cp = self.api.get_current_price(stock_code)
+                            cs = self.api.get_minute_chart(stock_code, period="3")
                         if cp and cs and len(cs) >= 10:
                             t = self.strategy.technical.analyze(
                                 self.strategy._ensure_ascending(cs), cp.get("price", 0))
@@ -979,13 +1000,21 @@ class AutoTrader:
                     continue
 
             try:
-                current = self.api.get_current_price(stock_code)
-                if not current or current.get("price", 0) <= 0:
-                    continue
-
-                candles = self.api.get_minute_chart(stock_code, period="3")
-                if not candles or len(candles) < 10:
-                    continue
+                # v4.2: 시장별 API 분기
+                if self.market != "KR":
+                    current = self.api.get_overseas_price(self.market, stock_code)
+                    if not current or current.get("price", 0) <= 0:
+                        continue
+                    candles = self.api.get_overseas_daily_chart(self.market, stock_code, count=30)
+                    if not candles or len(candles) < 10:
+                        continue
+                else:
+                    current = self.api.get_current_price(stock_code)
+                    if not current or current.get("price", 0) <= 0:
+                        continue
+                    candles = self.api.get_minute_chart(stock_code, period="3")
+                    if not candles or len(candles) < 10:
+                        continue
 
                 # 거래량 비율 계산 (최근 3봉 vs 이전 평균)
                 recent_vols = [c.get("volume", 0) for c in candles[:3]]
