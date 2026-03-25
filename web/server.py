@@ -236,31 +236,23 @@ def api_analyze():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/trade/start", methods=["POST"])
-def api_trade_start():
-    if _state["trading"]:
-        return jsonify({"error": "이미 실행 중"}), 400
+def _start_trading_direct(market: str, strategy_name: str = "expert",
+                          interval: int = 10, stocks: str = ""):
+    """매매 스레드를 직접 생성한다 (스케줄러/API 공용)."""
+    import logging
 
-    data = request.json or {}
-    stocks = data.get("stocks", "")
-    strategy_name = data.get("strategy", "expert")
-    interval = int(data.get("interval", 10))
-    market = data.get("market", "KR")
+    class WebLogHandler(logging.Handler):
+        def emit(self, record):
+            msg = self.format(record)
+            _state["logs"].append(msg)
+            if len(_state["logs"]) > 500:
+                _state["logs"] = _state["logs"][-300:]
+
+    handler = WebLogHandler()
+    handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S"))
 
     def _run():
-        import logging
-
-        class WebLogHandler(logging.Handler):
-            def emit(self, record):
-                msg = self.format(record)
-                _state["logs"].append(msg)
-                if len(_state["logs"]) > 500:
-                    _state["logs"] = _state["logs"][-300:]
-
-        handler = WebLogHandler()
-        handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S"))
         logging.getLogger("oshms").addHandler(handler)
-
         try:
             from strategy import ExpertStrategy, ScalpingStrategy, MomentumStrategy, CombinedStrategy
             from trading.trader import AutoTrader
@@ -295,6 +287,19 @@ def api_trade_start():
     thread.start()
     _state["thread"] = thread
 
+
+@app.route("/api/trade/start", methods=["POST"])
+def api_trade_start():
+    if _state["trading"]:
+        return jsonify({"error": "이미 실행 중"}), 400
+
+    data = request.json or {}
+    stocks = data.get("stocks", "")
+    strategy_name = data.get("strategy", "expert")
+    interval = int(data.get("interval", 10))
+    market = data.get("market", "KR")
+
+    _start_trading_direct(market, strategy_name, interval, stocks)
     return jsonify({"message": f"자동매매 시작 (시장: {market})"})
 
 
@@ -324,22 +329,13 @@ def api_scheduler_start():
     # ── 콜백: 시장 개장 시 자동 매매 시작 ──
     def on_start_trading(market_code):
         if _state["trading"]:
-            # 이미 다른 시장에서 매매 중 → 시장 전환
             if _state["trader"]:
                 _state["trader"].set_market(market_code)
                 _state["logs"].append(f"[스케줄러] 시장 전환: {market_code}")
             return
-        # 새로 매매 시작
         _state["logs"].append(f"[스케줄러] {market_code} 시장 개장 → 자동매매 시작")
-        # POST로 자동 시작 — 기존 로직 재사용
-        import requests as _req
-        try:
-            _req.post(f"http://127.0.0.1:{_server_port}/api/trade/start",
-                      json={"market": market_code, "strategy": strategy_name,
-                            "interval": interval},
-                      timeout=5)
-        except Exception as e:
-            _state["logs"].append(f"[스케줄러] 매매 시작 실패: {e}")
+        # 직접 매매 스레드 생성 (HTTP 우회)
+        _start_trading_direct(market_code, strategy_name, interval)
 
     # ── 콜백: 시장 마감 시 자동 매매 종료 ──
     def on_stop_trading(market_code):
