@@ -236,7 +236,7 @@ class OrderManager:
 
         # v4.2: 시장별 주문 API 분기
         if self.market != "KR":
-            result = self.api.buy_overseas_market_order(stock_code, quantity, self.market)
+            result = self.api.buy_overseas_market_order(self.market, stock_code, quantity, price)
         else:
             result = self.api.buy_market_order(stock_code, quantity)
         if not result["success"]:
@@ -287,7 +287,7 @@ class OrderManager:
 
         # v4.2: 시장별 주문 API 분기
         if self.market != "KR":
-            result = self.api.sell_overseas_market_order(stock_code, pos.quantity, self.market)
+            result = self.api.sell_overseas_market_order(self.market, stock_code, pos.quantity, pos.current_price)
         else:
             result = self.api.sell_market_order(stock_code, pos.quantity)
         if not result["success"]:

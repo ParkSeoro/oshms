@@ -1064,10 +1064,10 @@ class AutoTrader:
 
         # v4.2: 시장별 API 분기
         if self.market != "KR":
-            current_price = self.api.get_overseas_price(stock_code, self.market)
+            current_price = self.api.get_overseas_price(self.market, stock_code)
             if not current_price or not current_price.get("price"):
                 return
-            candles = self.api.get_overseas_daily_chart(stock_code, self.market, count=60)
+            candles = self.api.get_overseas_daily_chart(self.market, stock_code, count=60)
             if not candles:
                 return
         else:
