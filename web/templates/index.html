@@ -982,7 +982,7 @@ body::after {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   padding: 16px;
-  height: 360px;
+  height: 500px;
   overflow-y: auto;
   font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
   font-size: 12px;
@@ -2709,6 +2709,30 @@ body::after {
 
     var line = document.createElement('div');
     line.className = 'log-line';
+
+    // 로그 종류별 색상 구분
+    if (text.indexOf('매수 실행') >= 0 || text.indexOf('매수 완료') >= 0 || text.indexOf('STRONG_BUY') >= 0) {
+      line.style.color = '#4ade80';
+      line.style.fontWeight = 'bold';
+    } else if (text.indexOf('매도 실행') >= 0 || text.indexOf('매도 완료') >= 0 || text.indexOf('익절') >= 0) {
+      line.style.color = '#f87171';
+      line.style.fontWeight = 'bold';
+    } else if (text.indexOf('손절') >= 0 || text.indexOf('WARNING') >= 0) {
+      line.style.color = '#fbbf24';
+    } else if (text.indexOf('전문가 분석') >= 0 || text.indexOf('══') >= 0) {
+      line.style.color = '#60a5fa';
+      line.style.fontWeight = 'bold';
+    } else if (text.indexOf('종합점수') >= 0 || text.indexOf('기술분석') >= 0 || text.indexOf('가치분석') >= 0 ||
+               text.indexOf('패턴분석') >= 0 || text.indexOf('뉴스감성') >= 0 || text.indexOf('근거:') >= 0) {
+      line.style.color = '#93c5fd';
+    } else if (text.indexOf('진화') >= 0) {
+      line.style.color = '#c084fc';
+    } else if (text.indexOf('모멘텀 돌파') >= 0) {
+      line.style.color = '#34d399';
+    } else if (text.indexOf('트레일링') >= 0 || text.indexOf('장마감') >= 0) {
+      line.style.color = '#fb923c';
+    }
+
     line.textContent = text;
     box.appendChild(line);
     box.scrollTop = box.scrollHeight;

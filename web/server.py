@@ -244,11 +244,16 @@ def _start_trading_direct(market: str, strategy_name: str = "expert",
     class WebLogHandler(logging.Handler):
         def emit(self, record):
             msg = self.format(record)
-            _state["logs"].append(msg)
-            if len(_state["logs"]) > 500:
-                _state["logs"] = _state["logs"][-300:]
+            # 멀티라인 메시지를 줄별로 분리하여 추가
+            for line in msg.split('\n'):
+                line = line.strip()
+                if line:
+                    _state["logs"].append(line)
+            if len(_state["logs"]) > 2000:
+                _state["logs"] = _state["logs"][-1500:]
 
     handler = WebLogHandler()
+    handler.setLevel(logging.DEBUG)
     handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S"))
 
     def _run():
