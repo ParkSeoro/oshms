@@ -652,12 +652,16 @@ class AutoTrader:
             return self._stock_cache or []
 
     def _is_valid_stock(self, stock: dict) -> bool:
-        """매매 적합 종목인지 검증한다."""
+        """매매 적합 종목인지 검증한다.
+
+        v4.3: max_buy_amount 이하인 종목만 허용 (1주도 못 사면 제외).
+        """
         price = stock.get("price", 0)
         change_rate = stock.get("change_rate", 0)
+        max_price = min(self.settings.max_buy_amount, 1000000)
         return (
-            1000 < price < 1000000
-            and -8 < change_rate < 15  # 범위 확대 (더 많은 기회 포착)
+            1000 < price <= max_price
+            and -8 < change_rate < 15
         )
 
     def _score_stock_value(self, stock_data: dict) -> float:
@@ -1103,6 +1107,12 @@ class AutoTrader:
             current_price = self.api.get_current_price(stock_code)
             if not current_price or not current_price.get("price"):
                 return
+
+            # v4.3: 매수금액 대비 가격 필터 — 1주도 못 사는 종목은 분석 스킵
+            price = current_price["price"]
+            if stock_code not in self.order_manager.positions and price > self.settings.max_buy_amount:
+                return
+
             candles = self.api.get_minute_chart(stock_code, period="3")
             if len(candles) < 20:
                 candles = self.api.get_daily_chart(stock_code, count=60)
@@ -1149,6 +1159,18 @@ class AutoTrader:
                 return
             if not self.order_manager.can_buy():
                 return
+
+            # v4.3: 연속 손실 보호 — 최근 매도 3건 모두 손실이면 매수 일시 중단
+            recent_sells = [t for t in self.order_manager.trade_history[-5:]
+                           if t.side == "SELL"]
+            if len(recent_sells) >= 3:
+                recent_losses = [t for t in recent_sells[-3:] if t.profit_loss <= 0]
+                if len(recent_losses) >= 3:
+                    logger.info(
+                        "⛔ 연속 손실 보호: 최근 3건 연속 손실 — 매수 보류 (%s)",
+                        stock_code,
+                    )
+                    return
 
             target_price = getattr(signal, "target_price", 0) or 0
             estimated_upside = 0.0

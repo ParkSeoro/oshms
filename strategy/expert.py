@@ -106,11 +106,11 @@ class ExpertStrategy(BaseStrategy):
     }
 
     # 기본 매매 임계값 (종목별 동적으로 조정됨)
-    # v4.0: 소액 빈번 거래 — 매수 문턱 낮춰서 거래 빈도 ↑
-    STRONG_BUY_THRESHOLD = 0.15  # v4.0: 0.25→0.15
-    BUY_THRESHOLD = 0.08         # v4.0: 0.15→0.08 (더 자주 매수)
-    SELL_THRESHOLD = -0.03       # v4.0: -0.05→-0.03 (더 빨리 매도 신호)
-    STRONG_SELL_THRESHOLD = -0.10  # v4.0: -0.15→-0.10
+    # v4.3: 매수 기준 강화 — 약한 신호 매수 방지 (연속 손실 원인)
+    STRONG_BUY_THRESHOLD = 0.25  # v4.3: 0.15→0.25 복원 (확실한 신호만)
+    BUY_THRESHOLD = 0.15         # v4.3: 0.08→0.15 복원 (약한 신호 매수 금지)
+    SELL_THRESHOLD = -0.03       # 빠른 매도 유지
+    STRONG_SELL_THRESHOLD = -0.10
 
     # 종목 프로필 파일
     STOCK_PROFILES_FILE = Path("data/stock_profiles.json")
@@ -802,41 +802,47 @@ class ExpertStrategy(BaseStrategy):
         sell_thr = thresholds["sell"]
         strong_sell_thr = thresholds["strong_sell"]
 
-        # 시장 컨텍스트에 따른 추가 조정 (v4.0: 소액 전략이므로 조정폭 축소)
+        # v4.3: 시장 컨텍스트에 따른 매수 기준 조정 (하락장 매수 대폭 제한)
         buy_adj = 0
         sell_adj = 0
         if result.market_ctx:
             if result.market_ctx.regime == "trending_down":
-                buy_adj = 0.03   # v4.0: 0.12→0.03 (하락장도 매수 기회)
-                sell_adj = -0.02
+                buy_adj = 0.10   # v4.3: 0.03→0.10 (하락장에서 매수 기준 대폭 상향)
+                sell_adj = -0.03
             elif result.market_ctx.regime == "volatile":
-                buy_adj = 0.02   # v4.0: 0.08→0.02
-                sell_adj = -0.01
+                buy_adj = 0.05   # v4.3: 0.02→0.05 (변동성 장에서도 신중)
+                sell_adj = -0.02
             elif result.market_ctx.regime == "trending_up":
                 buy_adj = -0.02
             if not result.market_ctx.trading_ok:
                 return "HOLD"
 
-        # v4.0: 적자 기업 필터 완화 — 단타 전략이므로 PER 무관하게 기술적 분석 우선
-        # (기존: PER < 0이면 무조건 HOLD → 삭제)
+        # 적자 기업 필터 (PER < 0: 적자 기업은 매수 금지)
+        if result.per < 0 and score > 0:
+            return "HOLD"
 
-        # 극고PER(100+) 기업만 신중
-        if result.per > 100 and score > 0:
-            buy_adj += 0.05  # v4.0: PER>50/+0.10 → PER>100/+0.05
+        # 고PER(50+) 기업 신중
+        if result.per > 50 and score > 0:
+            buy_adj += 0.08  # v4.3: PER>100/+0.05 → PER>50/+0.08
 
-        # 거래량 극히 부족할 때만 보류 (v4.0: 0.8→0.3)
-        if result.technical and result.technical.volume_ratio < 0.3:
+        # 거래량 부족 시 보류 (v4.3: 0.3→0.5)
+        if result.technical and result.technical.volume_ratio < 0.5:
             if score > 0:
                 return "HOLD"
 
-        # 장 시작 직후 변동성 구간 (v4.0: 축소)
+        # 장 시작 직후 변동성 구간
         now_str = datetime.now().strftime("%H:%M")
-        if "09:00" <= now_str <= "09:10" and score > 0:
-            buy_adj += 0.03  # v4.0: 0.10→0.03
+        if "09:00" <= now_str <= "09:15" and score > 0:
+            buy_adj += 0.05  # v4.3: 0.03→0.05 (개장 15분 더 신중)
 
-        if score >= strong_buy_thr + buy_adj and confidence >= 0.25:
+        # v4.3: 기술적 분석이 하락추세면 매수 금지
+        if result.technical and result.technical.trend_score < -0.3 and score > 0:
+            return "HOLD"
+
+        # v4.3: 신뢰도 기준 강화 (0.25/0.15 → 0.40/0.30)
+        if score >= strong_buy_thr + buy_adj and confidence >= 0.40:
             return "STRONG_BUY"
-        elif score >= buy_thr + buy_adj and confidence >= 0.15:
+        elif score >= buy_thr + buy_adj and confidence >= 0.30:
             return "BUY"
         elif score <= strong_sell_thr + sell_adj and confidence >= 0.25:
             return "STRONG_SELL"
