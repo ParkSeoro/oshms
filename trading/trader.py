@@ -599,38 +599,46 @@ class AutoTrader:
 
             time.sleep(0.3)
 
-            # 3. 상승 종목 30개 (모멘텀)
+            # 3. 소폭 상승 종목 30개 (초기 모멘텀 — 급등 종목 제외)
+            # v4.3: 이미 5%+ 급등한 종목은 고점 매수 위험 → 제외
             try:
                 up_rank = self.api.get_fluctuation_rank(direction="up", count=30)
                 for i, s in enumerate(up_rank):
                     code = s["stock_code"]
                     cr = s.get("change_rate", 0)
-                    if self._is_valid_stock(s) and 0.3 < cr < 10:  # 소폭~중폭 상승
+                    if self._is_valid_stock(s) and 0.3 < cr < 4.0:  # v4.3: <10→<4 (소폭만)
                         if code in seen:
                             for j, (c, sc) in enumerate(candidates):
                                 if c == code:
-                                    candidates[j] = (c, sc + 20)
+                                    candidates[j] = (c, sc + 15)
                                     break
                         else:
                             seen.add(code)
-                            candidates.append((code, 20 - i))
+                            candidates.append((code, 15 - i))
             except Exception as e:
                 logger.warning("상승률 순위 조회 실패: %s", e)
 
             time.sleep(0.3)
 
-            # 4. 하락 반등 후보 20개 (과매도 저가 매수 기회)
+            # 4. 하락 반등 후보 30개 (과매도 저가 매수 — 핵심 전략)
+            # v4.3: 하락 반등이 실제로 수익률이 높음 → 비중 확대
             try:
-                down_rank = self.api.get_fluctuation_rank(direction="down", count=20)
+                down_rank = self.api.get_fluctuation_rank(direction="down", count=30)
                 for i, s in enumerate(down_rank):
                     code = s["stock_code"]
                     cr = s.get("change_rate", 0)
                     price = s.get("price", 0)
-                    # 적당한 하락폭(-1%~-5%) + 가격대 필터
-                    if -5 < cr < -1 and 3000 < price < 300000:
-                        if code not in seen:
+                    max_price = min(self.settings.max_buy_amount, 300000)
+                    # v4.3: 적당한 하락(-1%~-4%) + 가격대 필터 강화
+                    if -4 < cr < -1 and 3000 < price < max_price:
+                        if code in seen:
+                            for j, (c, sc) in enumerate(candidates):
+                                if c == code:
+                                    candidates[j] = (c, sc + 25)  # v4.3: 높은 점수
+                                    break
+                        else:
                             seen.add(code)
-                            candidates.append((code, 10))  # 기본 점수
+                            candidates.append((code, 25))  # v4.3: 10→25 (반등 매수 우선)
             except Exception as e:
                 logger.warning("하락률 순위 조회 실패: %s", e)
 
@@ -808,6 +816,25 @@ class AutoTrader:
                 self._on_trade_completed(code, pr, "SELL")
             except Exception as e:
                 logger.error("[%s] 익절 매도 실패: %s", code, e)
+
+        # ── 3.7 시간 기반 손실 종목 정리 (v4.3: 30분 이상 손실이면 정리) ──
+        for code, pos in list(self.order_manager.positions.items()):
+            try:
+                buy_time = datetime.strptime(pos.buy_time, "%H:%M:%S")
+                now = datetime.now()
+                buy_dt = now.replace(hour=buy_time.hour, minute=buy_time.minute,
+                                     second=buy_time.second)
+                elapsed_min = (now - buy_dt).total_seconds() / 60
+                if elapsed_min >= 30 and pos.profit_rate < -0.5:
+                    pr = pos.profit_rate
+                    logger.info(
+                        "⏰ 시간 손절: %s(%s) %.0f분 보유, 수익률=%.2f%% → 정리",
+                        pos.stock_name, code, elapsed_min, pr,
+                    )
+                    self.order_manager.execute_sell(code, f"시간손절({elapsed_min:.0f}분,{pr:.1f}%)")
+                    self._on_trade_completed(code, pr, "SELL")
+            except (ValueError, TypeError):
+                pass
 
         # ── 4. 장마감 처리 (v4.2: 시장별 마감 시간 자동 판단) ──
         from trading.market_scheduler import MARKETS, is_liquidation_time as _is_liq
