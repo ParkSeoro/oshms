@@ -694,19 +694,30 @@ def api_trades():
             code = t.get("stock_code", "")
             name = t.get("stock_name", "")
             if code and (not name or name == code):
-                if api is None:
-                    try:
+                try:
+                    if api is None:
                         api = _get_api()
-                    except Exception:
-                        break
-                cached = api._stock_name_cache.get(code, "")
-                if cached:
-                    t["stock_name"] = cached
+                    # v4.4: 캐시만이 아닌 get_stock_name() 호출 (API 조회 포함)
+                    resolved = api.get_stock_name(code) if hasattr(api, 'get_stock_name') else api._stock_name_cache.get(code, "")
+                    if resolved and resolved != code:
+                        t["stock_name"] = resolved
+                except Exception:
+                    continue  # v4.4: break→continue (한 종목 실패해도 나머지 계속)
 
-        # 최신순 정렬, 최근 50건
+        # 최신순 정렬 + 페이징
         data.reverse()
-        limit = int(request.args.get("limit", 50))
-        return jsonify({"trades": data[:limit]})
+        page = int(request.args.get("page", 1))
+        per_page = int(request.args.get("per_page", 20))
+        total = len(data)
+        start = (page - 1) * per_page
+        end = start + per_page
+        return jsonify({
+            "trades": data[start:end],
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": (total + per_page - 1) // per_page if per_page > 0 else 1,
+        })
     except Exception as e:
         return jsonify({"trades": [], "error": str(e)})
 

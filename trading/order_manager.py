@@ -191,7 +191,7 @@ class OrderManager:
     MIN_SELL_PROFIT_PCT = 0.5    # v4.3: 0.3→0.5% (수수료+세금 커버)
     MIN_SELL_PROFIT_KRW = 300    # v4.3: 500→300원 (소액 수익도 확정)
     MIN_HOLD_SECONDS = 120       # v4.3: 3분→2분 (빠른 수익 확정)
-    QUICK_STOP_LOSS_PCT = -3.0   # v4.3: -1.5→-3.0% (정상 변동 허용, 진짜 하락만 손절)
+    QUICK_STOP_LOSS_PCT = -2.0   # v4.4: -3.0→-2.0% (빠른 손절로 큰 손실 방지)
 
     def calc_buy_quantity(self, price: int, strength: float = 1.0,
                           per: float = 0, pbr: float = 0,
@@ -339,18 +339,19 @@ class OrderManager:
     def check_stop_loss(self) -> list[str]:
         """손절 조건을 확인하여 매도 대상 종목을 반환한다.
 
-        v4.3: ATR 기반 동적 손절 — 변동성에 맞는 손절폭 적용.
-        최소 -3% (정상 변동 허용), 최대 설정값.
+        v4.4: 절대 손절선 -2.5% — 어떤 경우에도 이 이상 손실 방지.
+        ATR 동적 손절은 더 타이트하게만 적용 (최소 -1.5%, 절대상한 -2.5%).
         """
         targets = []
+        HARD_STOP = -2.5  # v4.4: 절대 손절선 — 이 이상 손실 절대 불가
         for code, pos in self.positions.items():
-            # ATR 기반 동적 손절
+            # ATR 기반 동적 손절 (더 타이트하게)
             if pos.atr_at_buy > 0 and pos.avg_price > 0:
-                dynamic_stop_pct = -(pos.atr_at_buy * 2.5 / pos.avg_price * 100)
-                # v4.3: 최소 -3% (정상 변동 허용), 최대 설정값
-                stop_pct = max(self.settings.stop_loss_pct, min(-3.0, dynamic_stop_pct))
+                dynamic_stop_pct = -(pos.atr_at_buy * 2.0 / pos.avg_price * 100)
+                # v4.4: 최소 -1.5%, 최대 -2.5% (절대상한)
+                stop_pct = max(HARD_STOP, min(-1.5, dynamic_stop_pct))
             else:
-                stop_pct = self.settings.stop_loss_pct
+                stop_pct = HARD_STOP
 
             if pos.profit_rate <= stop_pct:
                 targets.append(code)

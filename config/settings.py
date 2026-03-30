@@ -21,7 +21,7 @@ class Settings:
     # v4.3: 소액 자본에 맞게 조정 — 집중 투자(2종목), 넓은 손절, 빠른 익절
     max_buy_amount: int = 500_000
     max_hold_count: int = 2        # v4.3: 5→2 (소액은 집중 투자가 유리)
-    stop_loss_pct: float = -3.5    # v4.3: -2.0→-3.5 (정상 변동 허용)
+    stop_loss_pct: float = -2.5    # v4.4: -3.5→-2.5 (손실 제한 강화)
     take_profit_pct: float = 1.5   # v4.3: 3.0→1.5 (작은 수익 자주 확정)
     initial_capital: int = 100_000  # 시작 자본금 (원)
 
@@ -60,7 +60,7 @@ class Settings:
             is_mock=os.getenv("KIS_MOCK", "true").lower() == "true",
             max_buy_amount=int(os.getenv("MAX_BUY_AMOUNT", "500000")),
             max_hold_count=int(os.getenv("MAX_HOLD_COUNT", "2")),
-            stop_loss_pct=float(os.getenv("STOP_LOSS_PCT", "-3.5")),
+            stop_loss_pct=float(os.getenv("STOP_LOSS_PCT", "-2.5")),
             take_profit_pct=float(os.getenv("TAKE_PROFIT_PCT", "1.5")),
             initial_capital=int(os.getenv("INITIAL_CAPITAL", "100000")),
             trading_start_time=os.getenv("TRADING_START_TIME", "09:05"),

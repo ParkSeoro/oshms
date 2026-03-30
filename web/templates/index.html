@@ -1500,6 +1500,11 @@ body::after {
             </tr>
           </tbody>
         </table>
+        <div id="tradesPagination" style="display:none; text-align:center; padding:10px 0; gap:8px; align-items:center; justify-content:center;">
+          <button id="tradesPrev" class="btn btn-sm" onclick="loadRecentTrades(currentTradesPage-1)" style="padding:4px 12px;">&laquo; 이전</button>
+          <span id="tradesPageInfo" style="color:#aaa; font-size:13px; margin:0 12px;"></span>
+          <button id="tradesNext" class="btn btn-sm" onclick="loadRecentTrades(currentTradesPage+1)" style="padding:4px 12px;">다음 &raquo;</button>
+        </div>
       </div>
     </div>
 
@@ -2080,8 +2085,8 @@ body::after {
           var gen = rs.generation || rs.evo_generation || 0;
           $('dEvoGen').textContent = gen;
         }
-        // 최근 거래 기록 로드 (개별 거래)
-        loadRecentTrades();
+        // 최근 거래 기록 로드 (개별 거래, 현재 페이지 유지)
+        loadRecentTrades(currentTradesPage);
         dashboardLoaded = true;
         return;
       }
@@ -2093,28 +2098,23 @@ body::after {
       var evalAmt = s.total_eval_amount || 0;
       var initial = balance.initial_capital || 100000;
 
-      /* v4.3: 자산 현황 정확도 개선
-       * - 총 자산: 평가금액 + 현금 (KIS API 기준)
-       * - 손익: KIS API의 total_profit_loss 우선 사용, 없으면 계산
-       * - 수익률: KIS API의 total_profit_rate 우선 사용
-       */
+      /* v4.4: 자산 현황 — 미실현 + 실현 손익 분리 계산 */
       var totalAsset = evalAmt + cash;
 
-      // KIS API가 제공하는 손익 데이터 우선 사용
-      var apiPL = s.total_profit_loss || 0;
-      var apiRate = s.total_profit_rate || 0;
+      // 미실현 손익 (보유 종목)
+      var unrealizedPL = 0;
+      h.forEach(function(item) { unrealizedPL += (item.profit_loss || 0); });
 
-      // 보유 종목이 있으면 API 손익 사용, 없으면 거래 기록 기반 계산
-      var pl, rate;
-      if (h.length > 0 && apiPL !== 0) {
-        pl = apiPL;
-        rate = apiRate;
-      } else {
-        // 누적 실현 손익 (report에서 가져옴)
-        var cumProfit = (report && report.summary) ? (report.summary.total_profit || 0) : 0;
-        pl = apiPL + cumProfit;
-        rate = initial > 0 ? (pl / initial * 100) : 0;
-      }
+      // 실현 손익 (거래 기록)
+      var realizedPL = (report && report.summary) ? (report.summary.total_profit || 0) : 0;
+
+      // API가 제공하는 미실현 손익이 있으면 그것 사용, 아니면 직접 계산
+      var apiPL = s.total_profit_loss || 0;
+      var effectiveUnrealized = (h.length > 0 && apiPL !== 0) ? apiPL : unrealizedPL;
+
+      // 총 손익 = 미실현 + 실현 (이중 계산 방지)
+      var pl = effectiveUnrealized + realizedPL;
+      var rate = initial > 0 ? (pl / initial * 100) : 0;
 
       // 총 자산이 0이면 초기자본금 표시
       if (totalAsset === 0) totalAsset = initial;
@@ -2174,7 +2174,7 @@ body::after {
       }
 
       /* Recent trades — 개별 거래 기록 로드 */
-      loadRecentTrades();
+      loadRecentTrades(1);
 
       dashboardLoaded = true;
       showToast('잔고 조회 완료', 'success');
@@ -2184,11 +2184,19 @@ body::after {
     });
   };
 
-  /* ═══ Recent Trades Loader (개별 거래 내역) ═══ */
-  function loadRecentTrades() {
-    fetch('/api/trades?limit=30').then(function(r) { return r.json(); }).then(function(d) {
-      if (!d.trades || !d.trades.length) return;
+  /* ═══ Recent Trades Loader (개별 거래 내역 + 페이징) ═══ */
+  var currentTradesPage = 1;
+  function loadRecentTrades(page) {
+    if (typeof page !== 'number' || page < 1) page = 1;
+    currentTradesPage = page;
+    fetch('/api/trades?page=' + page + '&per_page=20').then(function(r) { return r.json(); }).then(function(d) {
       var recentBody = $('recentTradesBody');
+      var pagination = $('tradesPagination');
+      if (!d.trades || !d.trades.length) {
+        if (page > 1) { loadRecentTrades(page - 1); return; }
+        pagination.style.display = 'none';
+        return;
+      }
       var tRows = '';
       d.trades.forEach(function(t) {
         var side = t.side || '';
@@ -2197,7 +2205,7 @@ body::after {
         var sideText = isBuy ? '매수' : '매도';
         var pl = t.profit_loss || 0;
         var plRate = t.profit_rate || 0;
-        var plText = isBuy ? '--' : (plSign(pl) + fmtWon(pl) + ' (' + plSign(plRate) + plRate.toFixed(1) + '%)');
+        var plText = isBuy ? '--' : (plSign(pl) + fmtWon(Math.abs(pl)) + ' (' + plSign(plRate) + plRate.toFixed(1) + '%)');
         var plCls = isBuy ? '' : plClass(pl);
         var code = t.stock_code || '';
         var rawName = t.stock_name || '';
@@ -2216,6 +2224,20 @@ body::after {
           '</tr>';
       });
       recentBody.innerHTML = tRows;
+
+      // 페이징 UI 업데이트
+      var totalPages = d.total_pages || 1;
+      currentTradesPage = d.page || page;
+      if (totalPages > 1) {
+        pagination.style.display = 'flex';
+        $('tradesPageInfo').textContent = currentTradesPage + ' / ' + totalPages + ' 페이지 (총 ' + d.total + '건)';
+        $('tradesPrev').disabled = currentTradesPage <= 1;
+        $('tradesNext').disabled = currentTradesPage >= totalPages;
+        $('tradesPrev').style.opacity = currentTradesPage <= 1 ? '0.4' : '1';
+        $('tradesNext').style.opacity = currentTradesPage >= totalPages ? '0.4' : '1';
+      } else {
+        pagination.style.display = 'none';
+      }
     }).catch(function() {});
   }
 

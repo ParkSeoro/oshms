@@ -955,6 +955,17 @@ class AutoTrader:
         self._trades_since_evolution += 1
         self._trades_since_code_evolution += 1
 
+        # v4.4: 매도 후 쿨다운 — 같은 종목 즉시 재매수 방지
+        if stock_code:
+            if profit_rate < 0:
+                # 손실 매도: 30분 쿨다운 (같은 종목 손실 반복 방지)
+                cooldown_sec = 1800
+                logger.info("⏸ 쿨다운 설정: %s → %d분 (손실 매도)", stock_code, cooldown_sec // 60)
+            else:
+                # 수익 매도: 10분 쿨다운 (단기 급등 후 하락 방지)
+                cooldown_sec = 600
+            self._cooldown_stocks[stock_code] = time.time() + cooldown_sec
+
         # 누적 통계 기록 (StateManager)
         try:
             last_trade = self.order_manager.trade_history[-1] if self.order_manager.trade_history else None
