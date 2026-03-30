@@ -674,6 +674,24 @@ def api_report():
     })
 
 
+@app.route("/api/trades")
+def api_trades():
+    """개별 거래 내역을 반환한다 (최신순)."""
+    import json
+    from pathlib import Path
+    trades_file = Path("logs/trades.json")
+    if not trades_file.exists():
+        return jsonify({"trades": []})
+    try:
+        data = json.loads(trades_file.read_text(encoding="utf-8"))
+        # 최신순 정렬, 최근 50건
+        data.reverse()
+        limit = int(request.args.get("limit", 50))
+        return jsonify({"trades": data[:limit]})
+    except Exception as e:
+        return jsonify({"trades": [], "error": str(e)})
+
+
 @app.route("/api/v32/ensemble")
 def api_ensemble():
     """v3.2: 전략 앙상블 현황."""
