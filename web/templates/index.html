@@ -1501,9 +1501,9 @@ body::after {
           </tbody>
         </table>
         <div id="tradesPagination" style="display:none; text-align:center; padding:10px 0; gap:8px; align-items:center; justify-content:center;">
-          <button id="tradesPrev" class="btn btn-sm" onclick="loadRecentTrades(currentTradesPage-1)" style="padding:4px 12px;">&laquo; 이전</button>
+          <button id="tradesPrev" class="btn btn-sm" onclick="window.loadRecentTrades(window.currentTradesPage-1)" style="padding:4px 12px;">&laquo; 이전</button>
           <span id="tradesPageInfo" style="color:#aaa; font-size:13px; margin:0 12px;"></span>
-          <button id="tradesNext" class="btn btn-sm" onclick="loadRecentTrades(currentTradesPage+1)" style="padding:4px 12px;">다음 &raquo;</button>
+          <button id="tradesNext" class="btn btn-sm" onclick="window.loadRecentTrades(window.currentTradesPage+1)" style="padding:4px 12px;">다음 &raquo;</button>
         </div>
       </div>
     </div>
@@ -2086,7 +2086,7 @@ body::after {
           $('dEvoGen').textContent = gen;
         }
         // 최근 거래 기록 로드 (개별 거래, 현재 페이지 유지)
-        loadRecentTrades(currentTradesPage);
+        window.loadRecentTrades(window.currentTradesPage);
         dashboardLoaded = true;
         return;
       }
@@ -2185,15 +2185,15 @@ body::after {
   };
 
   /* ═══ Recent Trades Loader (개별 거래 내역 + 페이징) ═══ */
-  var currentTradesPage = 1;
-  function loadRecentTrades(page) {
+  window.currentTradesPage = 1;
+  window.loadRecentTrades = function(page) {
     if (typeof page !== 'number' || page < 1) page = 1;
-    currentTradesPage = page;
+    window.currentTradesPage = page;
     fetch('/api/trades?page=' + page + '&per_page=20').then(function(r) { return r.json(); }).then(function(d) {
       var recentBody = $('recentTradesBody');
       var pagination = $('tradesPagination');
       if (!d.trades || !d.trades.length) {
-        if (page > 1) { loadRecentTrades(page - 1); return; }
+        if (page > 1) { window.loadRecentTrades(page - 1); return; }
         pagination.style.display = 'none';
         return;
       }
@@ -2227,19 +2227,19 @@ body::after {
 
       // 페이징 UI 업데이트
       var totalPages = d.total_pages || 1;
-      currentTradesPage = d.page || page;
+      window.currentTradesPage = d.page || page;
       if (totalPages > 1) {
         pagination.style.display = 'flex';
-        $('tradesPageInfo').textContent = currentTradesPage + ' / ' + totalPages + ' 페이지 (총 ' + d.total + '건)';
-        $('tradesPrev').disabled = currentTradesPage <= 1;
-        $('tradesNext').disabled = currentTradesPage >= totalPages;
-        $('tradesPrev').style.opacity = currentTradesPage <= 1 ? '0.4' : '1';
-        $('tradesNext').style.opacity = currentTradesPage >= totalPages ? '0.4' : '1';
+        $('tradesPageInfo').textContent = window.currentTradesPage + ' / ' + totalPages + ' 페이지 (총 ' + d.total + '건)';
+        $('tradesPrev').disabled = window.currentTradesPage <= 1;
+        $('tradesNext').disabled = window.currentTradesPage >= totalPages;
+        $('tradesPrev').style.opacity = window.currentTradesPage <= 1 ? '0.4' : '1';
+        $('tradesNext').style.opacity = window.currentTradesPage >= totalPages ? '0.4' : '1';
       } else {
         pagination.style.display = 'none';
       }
     }).catch(function() {});
-  }
+  };
 
   /* ═══ Evolution History Loader ═══ */
   function loadEvolutionHistory() {
