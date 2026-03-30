@@ -530,7 +530,7 @@ def api_manual_sell():
             return jsonify({"error": f"{stock_code} 종목을 보유하고 있지 않습니다"}), 400
 
         quantity = holding["quantity"]
-        stock_name = holding.get("stock_name", stock_code)
+        stock_name = holding.get("stock_name") or stock_code
 
         result = api.sell_market_order(stock_code, quantity)
         if not result["success"]:
@@ -572,7 +572,7 @@ def api_manual_buy():
             return jsonify({"error": f"{stock_code} 시세 조회 실패 — 종목코드를 확인하세요"}), 400
 
         price = price_data["price"]
-        stock_name = price_data.get("stock_name", stock_code)
+        stock_name = price_data.get("stock_name") or stock_code
 
         # 매수 금액 결정: 지정 금액 또는 설정의 최대 매수금액
         buy_amount = amount if amount > 0 else s.max_buy_amount
@@ -676,7 +676,10 @@ def api_report():
 
 @app.route("/api/trades")
 def api_trades():
-    """개별 거래 내역을 반환한다 (최신순)."""
+    """개별 거래 내역을 반환한다 (최신순).
+
+    v4.3: 종목명이 비어있으면 API 캐시에서 보충.
+    """
     import json
     from pathlib import Path
     trades_file = Path("logs/trades.json")
@@ -684,6 +687,22 @@ def api_trades():
         return jsonify({"trades": []})
     try:
         data = json.loads(trades_file.read_text(encoding="utf-8"))
+
+        # 종목명 보충 — 비어있거나 코드와 동일하면 API에서 조회
+        api = None
+        for t in data:
+            code = t.get("stock_code", "")
+            name = t.get("stock_name", "")
+            if code and (not name or name == code):
+                if api is None:
+                    try:
+                        api = _get_api()
+                    except Exception:
+                        break
+                cached = api._stock_name_cache.get(code, "")
+                if cached:
+                    t["stock_name"] = cached
+
         # 최신순 정렬, 최근 50건
         data.reverse()
         limit = int(request.args.get("limit", 50))

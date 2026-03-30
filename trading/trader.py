@@ -98,6 +98,20 @@ class AutoTrader:
         now = datetime.now().strftime("%H:%M")
         return self.settings.trading_start_time <= now <= self.settings.trading_end_time
 
+    def _resolve_stock_name(self, stock_code: str, price_data: dict = None) -> str:
+        """종목명을 확실히 반환한다 (빈 문자열 방지).
+
+        v4.3: API 데이터에 종목명이 없으면 캐시에서 조회.
+        """
+        if price_data:
+            name = price_data.get("stock_name") or ""
+            if name:
+                return name
+        # API 캐시에서 조회
+        if hasattr(self.api, 'get_stock_name'):
+            return self.api.get_stock_name(stock_code)
+        return stock_code
+
     def set_market(self, market: str):
         """활성 시장을 변경한다."""
         self.market = market
@@ -1071,7 +1085,7 @@ class AutoTrader:
                 )
 
                 if is_breakout:
-                    stock_name = current.get("stock_name", stock_code)
+                    stock_name = self._resolve_stock_name(stock_code, current)
                     logger.info(
                         "🚀 모멘텀 돌파 감지: %s(%s) 거래량=%.1fx 가격돌파=%s→%s",
                         stock_name, stock_code, volume_ratio,
@@ -1147,7 +1161,7 @@ class AutoTrader:
                 return
 
         # ── 2단계: 전략 분석 (한 번만) ──
-        stock_name = current_price.get("stock_name", stock_code)
+        stock_name = self._resolve_stock_name(stock_code, current_price)
         atr_value = 0.0
 
         if isinstance(self.strategy, ExpertStrategy):

@@ -314,7 +314,7 @@ class ExpertStrategy(BaseStrategy):
     def analyze(self, stock_code: str, candles: list[dict], current_price: dict) -> Signal:
         """종합 분석을 수행하여 매매 신호를 생성한다."""
         price = current_price.get("price", 0)
-        stock_name = current_price.get("stock_name", stock_code)
+        stock_name = current_price.get("stock_name") or stock_code
 
         analysis = self.full_analysis(stock_code, stock_name, candles, current_price)
 
@@ -1005,7 +1005,7 @@ class ExpertStrategy(BaseStrategy):
             - reason: 판단 근거
         """
         price = current_price.get("price", 0)
-        stock_name = current_price.get("stock_name", stock_code)
+        stock_name = current_price.get("stock_name") or stock_code
         if price <= 0:
             return {"target_price": 0, "upside_pct": 0, "trend_alive": False,
                     "momentum_score": 0, "should_hold": False, "reason": "가격 데이터 없음"}

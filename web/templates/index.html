@@ -2145,15 +2145,16 @@ body::after {
           var itemRate = item.profit_rate || (item.avg_price ? ((item.current_price - item.avg_price) / item.avg_price * 100) : 0);
           var cls = plClass(itemPL);
           var code = item.stock_code || '';
-          var name = item.stock_name || code || '--';
+          var rawName = item.stock_name || '';
+          var nameDisplay = rawName && rawName !== code ? rawName + '(' + code + ')' : code;
           rows += '<tr>' +
-            '<td><strong>' + name + '</strong></td>' +
+            '<td><strong>' + nameDisplay + '</strong></td>' +
             '<td>' + fmt(item.quantity) + '</td>' +
             '<td>' + fmt(item.avg_price) + '</td>' +
             '<td>' + fmt(item.current_price) + '</td>' +
             '<td class="' + cls + '">' + plSign(itemPL) + fmt(itemPL) + '</td>' +
             '<td class="' + cls + '"><span class="tag ' + (itemPL >= 0 ? 'tag-green' : 'tag-red') + '">' + plSign(itemRate) + (typeof itemRate === 'number' ? itemRate.toFixed(2) : itemRate) + '%</span></td>' +
-            '<td><button class="btn-sell" onclick="manualSell(\'' + code + '\', \'' + name.replace(/'/g, "\\'") + '\')" title="강제 매도">매도</button></td>' +
+            '<td><button class="btn-sell" onclick="manualSell(\'' + code + '\', \'' + (rawName || code).replace(/'/g, "\\'") + '\')" title="강제 매도">매도</button></td>' +
             '</tr>';
         });
         tbody.innerHTML = rows;
@@ -2198,13 +2199,15 @@ body::after {
         var plRate = t.profit_rate || 0;
         var plText = isBuy ? '--' : (plSign(pl) + fmtWon(pl) + ' (' + plSign(plRate) + plRate.toFixed(1) + '%)');
         var plCls = isBuy ? '' : plClass(pl);
-        var name = t.stock_name || t.stock_code || '--';
+        var code = t.stock_code || '';
+        var rawName = t.stock_name || '';
+        var nameDisplay = rawName && rawName !== code ? rawName + '(' + code + ')' : code;
         var time = t.timestamp ? t.timestamp.substring(5, 16) : '--';
         var reason = t.reason || '';
         if (reason.length > 15) reason = reason.substring(0, 15) + '..';
         tRows += '<tr>' +
           '<td>' + time + '</td>' +
-          '<td><strong>' + name + '</strong></td>' +
+          '<td><strong>' + nameDisplay + '</strong></td>' +
           '<td><span class="tag ' + sideCls + '">' + sideText + '</span></td>' +
           '<td>' + fmt(t.quantity || 0) + '주</td>' +
           '<td>' + fmt(t.price || 0) + '원</td>' +
@@ -2831,7 +2834,7 @@ body::after {
       else { decLabel = '관망 추천'; }
 
       html += '<div class="decision-badge ' + decClass + ' slide-up">' +
-        '<div class="decision-label">' + (d.stock_name || name) + ' 투자 판단</div>' +
+        '<div class="decision-label">' + ((d.stock_name || name) + (code ? '(' + code + ')' : '')) + ' 투자 판단</div>' +
         '<div class="decision-text">' + dec + '</div>' +
         '<div class="decision-sub">' + decLabel + '</div>' +
         '</div>';

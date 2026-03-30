@@ -28,6 +28,9 @@ class KISApi:
         self._token_expires_at: datetime = datetime.min
         self.session = requests.Session()
 
+        # v4.3: 종목명 캐시 (코드→이름 매핑)
+        self._stock_name_cache: dict[str, str] = {}
+
         # 연결 끊김(RemoteDisconnected) 자동 재시도
         retry_strategy = Retry(
             total=3,
@@ -162,9 +165,12 @@ class KISApi:
             return {}
 
         output = data.get("output", {})
+        name = output.get("hts_kor_isnm", "")
+        if name:
+            self._stock_name_cache[stock_code] = name
         return {
             "stock_code": stock_code,
-            "stock_name": output.get("hts_kor_isnm", ""),
+            "stock_name": name or self._stock_name_cache.get(stock_code, ""),
             "price": int(output.get("stck_prpr", 0)),
             "open": int(output.get("stck_oprc", 0)),
             "high": int(output.get("stck_hgpr", 0)),
@@ -180,6 +186,24 @@ class KISApi:
             "w52_low": int(output.get("stck_dryy_lwpr", 0)),
             "market_cap": int(output.get("hts_avls", 0)),
         }
+
+    def get_stock_name(self, stock_code: str) -> str:
+        """종목명을 반환한다 (캐시 우선, 없으면 API 조회).
+
+        v4.3: 모든 표시에서 종목명을 보장하기 위한 헬퍼.
+        """
+        if stock_code in self._stock_name_cache:
+            return self._stock_name_cache[stock_code]
+        # 캐시 미스 → API 조회
+        try:
+            data = self.get_current_price(stock_code)
+            name = data.get("stock_name", "")
+            if name:
+                self._stock_name_cache[stock_code] = name
+                return name
+        except Exception:
+            pass
+        return stock_code
 
     def get_minute_chart(self, stock_code: str, period: str = "1") -> list[dict]:
         """분봉 데이터를 조회한다.
