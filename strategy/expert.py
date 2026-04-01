@@ -95,23 +95,19 @@ class ExpertStrategy(BaseStrategy):
 
     name = "expert"
 
-    # 분석 가중치 (버핏 가치투자 + 기술적 분석 융합)
-    # v4.3: 단기 매매에 맞게 가중치 재조정
-    # 가치분석(PER/PBR)은 단기 매매에 무의미 → 대폭 축소
-    # 기술적 분석 + 시장환경 중심으로 재편
+    # 분석 가중치 (v4.4: 기술적 분석 최우선 — 단기 매매 최적화)
     WEIGHTS = {
-        "technical": 0.40,     # v4.3: 0.30→0.40 (핵심 지표)
-        "value": 0.05,         # v4.3: 0.20→0.05 (단기매매에 무의미)
-        "pattern": 0.15,       # v4.3: 0.10→0.15 (캔들 패턴 중요)
-        "sentiment": 0.05,     # v4.3: 0.10→0.05 (뉴스는 느림)
-        "market": 0.20,        # v4.3: 0.15→0.20 (시장 분위기 핵심)
+        "technical": 0.50,     # v4.4: 0.40→0.50 (기술적 분석이 핵심)
+        "value": 0.00,         # v4.4: 0.05→0.00 (단기매매에 완전 무의미)
+        "pattern": 0.15,       # 캔들 패턴 유지
+        "sentiment": 0.00,     # v4.4: 0.05→0.00 (뉴스는 느리고 부정확)
+        "market": 0.20,        # 시장 분위기 유지
         "price_level": 0.15,   # 지지/저항 가격 위치 유지
     }
 
-    # 기본 매매 임계값 (종목별 동적으로 조정됨)
-    # v4.3: 매수 기준 강화 — 약한 신호 매수 방지 (연속 손실 원인)
-    STRONG_BUY_THRESHOLD = 0.25  # v4.3: 0.15→0.25 복원 (확실한 신호만)
-    BUY_THRESHOLD = 0.15         # v4.3: 0.08→0.15 복원 (약한 신호 매수 금지)
+    # v4.4: 매수 기준 더 강화 — 확실한 기회만 진입
+    STRONG_BUY_THRESHOLD = 0.30  # v4.4: 0.25→0.30
+    BUY_THRESHOLD = 0.20         # v4.4: 0.15→0.20 (확실한 신호만)
     SELL_THRESHOLD = -0.03       # 빠른 매도 유지
     STRONG_SELL_THRESHOLD = -0.10
 
@@ -791,7 +787,17 @@ class ExpertStrategy(BaseStrategy):
         return min(1.0, confidence)
 
     def _make_decision(self, result: ExpertAnalysis) -> str:
-        """최종 매매 결정 (종목별 동적 임계값 사용)."""
+        """최종 매매 결정 (v4.4: 다중 확인 — 확실한 기회만 진입).
+
+        매수 조건 (ALL 충족):
+        1. 종합 점수 > 임계값
+        2. 기술적 분석 3가지 중 2개 이상 양호
+           - RSI 35~65 (과매수/과매도 아닌 구간)
+           - MACD 양전 또는 골든크로스
+           - 거래량 평균 이상 (ratio > 0.8)
+        3. 점심시간(11:30~13:00) 신규 매수 금지
+        4. 하락추세(-0.2 이하) 매수 금지
+        """
         score = result.total_score
         confidence = result.confidence
 
@@ -805,47 +811,71 @@ class ExpertStrategy(BaseStrategy):
         sell_thr = thresholds["sell"]
         strong_sell_thr = thresholds["strong_sell"]
 
-        # v4.3: 시장 컨텍스트에 따른 매수 기준 조정 (하락장 매수 대폭 제한)
+        # 시장 컨텍스트에 따른 매수 기준 조정
         buy_adj = 0
         sell_adj = 0
         if result.market_ctx:
             if result.market_ctx.regime == "trending_down":
-                buy_adj = 0.10   # v4.3: 0.03→0.10 (하락장에서 매수 기준 대폭 상향)
+                buy_adj = 0.12   # v4.4: 하락장 매수 거의 불가
                 sell_adj = -0.03
             elif result.market_ctx.regime == "volatile":
-                buy_adj = 0.05   # v4.3: 0.02→0.05 (변동성 장에서도 신중)
+                buy_adj = 0.06
                 sell_adj = -0.02
             elif result.market_ctx.regime == "trending_up":
-                buy_adj = -0.02
+                buy_adj = -0.03  # v4.4: 상승장에서는 약간 공격적
             if not result.market_ctx.trading_ok:
                 return "HOLD"
 
-        # 적자 기업 필터 (PER < 0: 적자 기업은 매수 금지)
-        if result.per < 0 and score > 0:
-            return "HOLD"
+        # ── 매수 금지 조건 (하나라도 해당하면 HOLD) ──
+        if score > 0 and result.technical:
+            t = result.technical
 
-        # 고PER(50+) 기업 신중
-        if result.per > 50 and score > 0:
-            buy_adj += 0.08  # v4.3: PER>100/+0.05 → PER>50/+0.08
-
-        # 거래량 부족 시 보류 (v4.3: 0.3→0.5)
-        if result.technical and result.technical.volume_ratio < 0.5:
-            if score > 0:
+            # 1. 하락추세 매수 금지 (v4.4: -0.3→-0.2 더 엄격)
+            if t.trend_score < -0.2:
                 return "HOLD"
 
-        # 장 시작 직후 변동성 구간
-        now_str = datetime.now().strftime("%H:%M")
-        if "09:00" <= now_str <= "09:15" and score > 0:
-            buy_adj += 0.05  # v4.3: 0.03→0.05 (개장 15분 더 신중)
+            # 2. 거래량 부족 (v4.4: 0.5→0.8 — 평균 이상 거래량 필요)
+            if t.volume_ratio < 0.8:
+                return "HOLD"
 
-        # v4.3: 기술적 분석이 하락추세면 매수 금지
-        if result.technical and result.technical.trend_score < -0.3 and score > 0:
-            return "HOLD"
+            # 3. RSI 과매수 구간 매수 금지 (이미 올라간 종목)
+            if t.rsi > 70:
+                return "HOLD"
 
-        # v4.3: 신뢰도 기준 강화 (0.25/0.15 → 0.40/0.30)
-        if score >= strong_buy_thr + buy_adj and confidence >= 0.40:
+            # 4. 점심시간 신규 매수 금지 (유동성 부족)
+            now_str = datetime.now().strftime("%H:%M")
+            if "11:30" <= now_str <= "13:00":
+                return "HOLD"
+
+            # 5. 장 시작 직후 15분 — 변동성 과다
+            if "09:00" <= now_str <= "09:15":
+                buy_adj += 0.08
+
+            # 6. 적자 기업 매수 금지
+            if result.per < 0:
+                return "HOLD"
+
+            # v4.4: 다중 확인 — 기술 지표 3개 중 2개 이상 양호해야 매수
+            tech_confirms = 0
+            # RSI 회복 구간 (35~65 — 과매도 반등 or 상승 초입)
+            if 35 <= t.rsi <= 65:
+                tech_confirms += 1
+            # MACD 양전 또는 골든크로스
+            if t.macd_cross == "golden" or (hasattr(t, 'macd_histogram') and t.macd_histogram > 0):
+                tech_confirms += 1
+            elif t.trend_score > 0.1:  # MACD 없어도 추세가 양호하면 OK
+                tech_confirms += 1
+            # 거래량 1.2배 이상 (활발한 거래)
+            if t.volume_ratio >= 1.2:
+                tech_confirms += 1
+
+            if tech_confirms < 2:
+                return "HOLD"
+
+        # ── 매매 결정 ──
+        if score >= strong_buy_thr + buy_adj and confidence >= 0.45:
             return "STRONG_BUY"
-        elif score >= buy_thr + buy_adj and confidence >= 0.30:
+        elif score >= buy_thr + buy_adj and confidence >= 0.35:
             return "BUY"
         elif score <= strong_sell_thr + sell_adj and confidence >= 0.25:
             return "STRONG_SELL"

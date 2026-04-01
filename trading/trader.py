@@ -613,52 +613,52 @@ class AutoTrader:
 
             time.sleep(0.3)
 
-            # 3. 소폭 상승 종목 30개 (초기 모멘텀 — 급등 종목 제외)
-            # v4.3: 이미 5%+ 급등한 종목은 고점 매수 위험 → 제외
+            # 3. 소폭 상승 종목 30개 (초기 모멘텀 — 핵심 전략)
+            # v4.4: 1~3% 상승 = 모멘텀 시작, 급등 아직 아닌 구간
             try:
                 up_rank = self.api.get_fluctuation_rank(direction="up", count=30)
                 for i, s in enumerate(up_rank):
                     code = s["stock_code"]
                     cr = s.get("change_rate", 0)
-                    if self._is_valid_stock(s) and 0.3 < cr < 4.0:  # v4.3: <10→<4 (소폭만)
+                    if self._is_valid_stock(s) and 0.5 < cr < 3.0:  # v4.4: 0.3~4→0.5~3 (더 좁은 범위)
                         if code in seen:
                             for j, (c, sc) in enumerate(candidates):
                                 if c == code:
-                                    candidates[j] = (c, sc + 15)
+                                    candidates[j] = (c, sc + 20)  # v4.4: 15→20 (모멘텀 중시)
                                     break
                         else:
                             seen.add(code)
-                            candidates.append((code, 15 - i))
+                            candidates.append((code, 20 - i))
             except Exception as e:
                 logger.warning("상승률 순위 조회 실패: %s", e)
 
             time.sleep(0.3)
 
-            # 4. 하락 반등 후보 30개 (과매도 저가 매수 — 핵심 전략)
-            # v4.3: 하락 반등이 실제로 수익률이 높음 → 비중 확대
+            # 4. 하락 반등 후보 20개 (v4.4: 축소 — 떨어지는 칼날 위험)
+            # 하락 반등은 위험이 크므로 비중 축소, 소폭 하락만
             try:
-                down_rank = self.api.get_fluctuation_rank(direction="down", count=30)
+                down_rank = self.api.get_fluctuation_rank(direction="down", count=20)
                 for i, s in enumerate(down_rank):
                     code = s["stock_code"]
                     cr = s.get("change_rate", 0)
                     price = s.get("price", 0)
                     max_price = min(self.settings.max_buy_amount, 300000)
-                    # v4.3: 적당한 하락(-1%~-4%) + 가격대 필터 강화
-                    if -4 < cr < -1 and 3000 < price < max_price:
+                    # v4.4: -1%~-2.5%만 (소폭 하락만, 급락 제외)
+                    if -2.5 < cr < -1 and 3000 < price < max_price:
                         if code in seen:
                             for j, (c, sc) in enumerate(candidates):
                                 if c == code:
-                                    candidates[j] = (c, sc + 25)  # v4.3: 높은 점수
+                                    candidates[j] = (c, sc + 10)  # v4.4: 25→10 (비중 축소)
                                     break
                         else:
                             seen.add(code)
-                            candidates.append((code, 25))  # v4.3: 10→25 (반등 매수 우선)
+                            candidates.append((code, 10))  # v4.4: 25→10
             except Exception as e:
                 logger.warning("하락률 순위 조회 실패: %s", e)
 
-            # 점수 기준 정렬 → 상위 50개 선정
+            # 점수 기준 정렬 → 상위 30개 선정 (v4.4: 50→30 집중)
             candidates.sort(key=lambda x: x[1], reverse=True)
-            result = [code for code, _ in candidates[:50]]
+            result = [code for code, _ in candidates[:30]]
 
             if result:
                 self._stock_cache = result
@@ -676,14 +676,16 @@ class AutoTrader:
     def _is_valid_stock(self, stock: dict) -> bool:
         """매매 적합 종목인지 검증한다.
 
-        v4.3: max_buy_amount 이하인 종목만 허용 (1주도 못 사면 제외).
+        v4.4: 더 엄격한 필터 — 안정적인 종목만 허용.
+        - 가격: 3,000~max_buy_amount (너무 싼 주식은 변동성 과다)
+        - 등락률: -5% ~ +8% (극단적 변동 제외)
         """
         price = stock.get("price", 0)
         change_rate = stock.get("change_rate", 0)
-        max_price = min(self.settings.max_buy_amount, 1000000)
+        max_price = min(self.settings.max_buy_amount, 500000)
         return (
-            1000 < price <= max_price
-            and -8 < change_rate < 15
+            3000 < price <= max_price      # v4.4: 1000→3000 (페니주 제외)
+            and -5 < change_rate < 8       # v4.4: -8~15 → -5~8 (극단 제외)
         )
 
     def _score_stock_value(self, stock_data: dict) -> float:
@@ -831,7 +833,7 @@ class AutoTrader:
             except Exception as e:
                 logger.error("[%s] 익절 매도 실패: %s", code, e)
 
-        # ── 3.7 시간 기반 손실 종목 정리 (v4.3: 30분 이상 손실이면 정리) ──
+        # ── 3.7 시간 기반 손실 종목 정리 (v4.4: 20분 이상 손실이면 정리) ──
         for code, pos in list(self.order_manager.positions.items()):
             try:
                 buy_time = datetime.strptime(pos.buy_time, "%H:%M:%S")
@@ -839,7 +841,7 @@ class AutoTrader:
                 buy_dt = now.replace(hour=buy_time.hour, minute=buy_time.minute,
                                      second=buy_time.second)
                 elapsed_min = (now - buy_dt).total_seconds() / 60
-                if elapsed_min >= 30 and pos.profit_rate < -0.5:
+                if elapsed_min >= 20 and pos.profit_rate < -0.3:  # v4.4: 30분/-0.5→20분/-0.3
                     pr = pos.profit_rate
                     logger.info(
                         "⏰ 시간 손절: %s(%s) %.0f분 보유, 수익률=%.2f%% → 정리",
