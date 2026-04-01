@@ -2173,8 +2173,8 @@ body::after {
         $('dEvoGen').textContent = gen;
       }
 
-      /* Recent trades — 개별 거래 기록 로드 */
-      loadRecentTrades(1);
+      /* Recent trades — 개별 거래 기록 로드 (현재 페이지 유지) */
+      window.loadRecentTrades(window.currentTradesPage);
 
       dashboardLoaded = true;
       showToast('잔고 조회 완료', 'success');
