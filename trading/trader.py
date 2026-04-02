@@ -98,6 +98,19 @@ class AutoTrader:
         now = datetime.now().strftime("%H:%M")
         return self.settings.trading_start_time <= now <= self.settings.trading_end_time
 
+    def _is_market_hours(self) -> bool:
+        """시장이 아직 열려있는지 확인 (청산 시간 포함).
+
+        v4.5: is_trading_time()은 신규 매수 시간만 체크.
+        이 함수는 장마감 청산까지 포함하여 시장 종료 전까지 True.
+        """
+        from trading.market_scheduler import MARKETS, is_market_open as _is_open
+        m = MARKETS.get(self.market)
+        if m:
+            return _is_open(m)
+        now = datetime.now().strftime("%H:%M")
+        return self.settings.trading_start_time <= now <= "15:30"
+
     def _resolve_stock_name(self, stock_code: str, price_data: dict = None) -> str:
         """종목명을 확실히 반환한다 (빈 문자열 방지).
 
@@ -151,6 +164,16 @@ class AutoTrader:
         while self._running:
             try:
                 if not self.is_trading_time():
+                    # v4.5: 매매 시간은 끝났지만 시장이 열려있으면 리스크 관리 실행
+                    # (장마감 청산 등 — 보유 종목이 다음날로 넘어가는 것 방지)
+                    if self._is_market_hours() and self.order_manager.positions:
+                        logger.info("[청산 모드] 매매 시간 종료 — 보유 종목 %d개 청산 확인 중",
+                                    len(self.order_manager.positions))
+                        self.order_manager.update_prices()
+                        self._check_risk_management()
+                        time.sleep(interval)
+                        continue
+
                     now = datetime.now().strftime("%H:%M:%S")
                     logger.info("[%s] 매매 시간 외 - 대기 중...", now)
                     time.sleep(60)
@@ -1050,6 +1073,14 @@ class AutoTrader:
         if not self.order_manager.can_buy():
             return
 
+        # v4.5: 장마감 15분 전 신규 매수 금지
+        from trading.market_scheduler import MARKETS
+        mkt = MARKETS.get(self.market)
+        if mkt:
+            now_str = datetime.now().strftime("%H:%M")
+            if not mkt.crosses_midnight and now_str >= mkt.liquidate_time:
+                return
+
         for stock_code in stocks[:10]:  # 상위 10종목만 스캔
             if stock_code in self.order_manager.positions:
                 continue
@@ -1213,6 +1244,15 @@ class AutoTrader:
                 return
             if not self.order_manager.can_buy():
                 return
+
+            # v4.5: 장마감 15분 전 신규 매수 금지 (익일 보유 방지)
+            from trading.market_scheduler import MARKETS
+            mkt = MARKETS.get(self.market)
+            if mkt:
+                now_str = datetime.now().strftime("%H:%M")
+                if not mkt.crosses_midnight and now_str >= mkt.liquidate_time:
+                    logger.info("⛔ 장마감 임박 — 신규 매수 차단 (%s, %s)", stock_code, now_str)
+                    return
 
             # v4.3: 연속 손실 보호 — 최근 매도 3건 모두 손실이면 매수 일시 중단
             recent_sells = [t for t in self.order_manager.trade_history[-5:]

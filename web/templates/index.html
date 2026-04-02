@@ -2096,38 +2096,22 @@ body::after {
       var h = balance.holdings || [];
       var cash = s.available_cash || 0;
       var evalAmt = s.total_eval_amount || 0;
-      var initial = balance.initial_capital || 100000;
 
-      /* v4.4: 자산 현황 — 미실현 + 실현 손익 분리 계산 */
-      var totalAsset = evalAmt + cash;
-
-      // 미실현 손익 (보유 종목)
-      var unrealizedPL = 0;
-      h.forEach(function(item) { unrealizedPL += (item.profit_loss || 0); });
-
-      // 실현 손익 (거래 기록)
-      var realizedPL = (report && report.summary) ? (report.summary.total_profit || 0) : 0;
-
-      // API가 제공하는 미실현 손익이 있으면 그것 사용, 아니면 직접 계산
-      var apiPL = s.total_profit_loss || 0;
-      var effectiveUnrealized = (h.length > 0 && apiPL !== 0) ? apiPL : unrealizedPL;
-
-      // 총 손익 = 미실현 + 실현 (이중 계산 방지)
-      var pl = effectiveUnrealized + realizedPL;
-      var rate = initial > 0 ? (pl / initial * 100) : 0;
-
-      // 총 자산이 0이면 초기자본금 표시
-      if (totalAsset === 0) totalAsset = initial;
+      /* v4.5: 자산 현황 — KIS API 실제 데이터 직접 사용 (초기자본 기반 계산 폐지) */
+      var totalAsset = cash + evalAmt;
+      var pl = s.total_profit_loss || 0;             // KIS API 평가손익
+      var rate = s.total_profit_rate || 0;            // KIS API 수익률
+      var totalBuy = s.total_buy_amount || 0;         // 총 매입금액
 
       $('dTotalAsset').textContent = fmtWon(totalAsset);
-      $('dCashSub').textContent = '현금: ' + fmtWon(cash) + (evalAmt > 0 ? ' | 평가: ' + fmtWon(evalAmt) : '');
+      $('dCashSub').textContent = '예수금: ' + fmtWon(cash) + (evalAmt > 0 ? ' | 평가: ' + fmtWon(evalAmt) : '');
 
       var plEl = $('dTotalPL');
       plEl.textContent = plSign(pl) + fmtWon(Math.abs(pl));
       plEl.className = 'stat-value ' + plClass(pl);
 
       var rateEl = $('dTotalRate');
-      rateEl.textContent = plSign(rate) + (typeof rate === 'number' ? rate.toFixed(2) : rate) + '%';
+      rateEl.textContent = plSign(rate) + rate.toFixed(2) + '%';
       rateEl.className = 'stat-value ' + plClass(rate);
 
       $('dHoldCount').textContent = h.length;
