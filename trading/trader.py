@@ -365,24 +365,30 @@ class AutoTrader:
                 self.strategy.apply_adjustments(adjustments)
                 logger.info("진화 조정 적용: %s", adjustments)
 
-            # v2.9→v3.2: 리스크 파라미터 자동 진화 — 실제 적용
+            # v4.5: 리스크 파라미터 자동 진화 — 안전 한계 내에서만 적용
             risk = result.get("risk_params", {})
             if risk:
                 applied = []
                 if risk.get("stop_loss_pct") and hasattr(self.settings, 'stop_loss_pct'):
-                    self.settings.stop_loss_pct = risk["stop_loss_pct"]
-                    applied.append(f"손절={risk['stop_loss_pct']:.1f}%")
+                    # 안전 한계: -2.5% 이상으로 절대 확대 불가
+                    safe_stop = max(-2.5, risk["stop_loss_pct"])
+                    self.settings.stop_loss_pct = safe_stop
+                    applied.append(f"손절={safe_stop:.1f}%")
                 if risk.get("trailing_base"):
-                    self._trailing_base = risk["trailing_base"]
-                    applied.append(f"트레일링={risk['trailing_base']:.1f}%")
+                    # 안전 한계: 0.3~2.0% 범위
+                    safe_trail = max(0.3, min(2.0, risk["trailing_base"]))
+                    self._trailing_base = safe_trail
+                    applied.append(f"트레일링={safe_trail:.1f}%")
                 if risk.get("take_profit_pct") and hasattr(self.settings, 'take_profit_pct'):
-                    self.settings.take_profit_pct = risk["take_profit_pct"]
-                    applied.append(f"익절={risk['take_profit_pct']:.0f}%")
+                    # 안전 한계: 1.0~5.0% 범위
+                    safe_tp = max(1.0, min(5.0, risk["take_profit_pct"]))
+                    self.settings.take_profit_pct = safe_tp
+                    applied.append(f"익절={safe_tp:.1f}%")
                 if risk.get("cooldown_seconds"):
                     self._COOLDOWN_SECONDS = int(risk["cooldown_seconds"])
                     applied.append(f"쿨다운={risk['cooldown_seconds']}초")
                 if applied:
-                    logger.info("리스크 진화 실적용: %s", " | ".join(applied))
+                    logger.info("리스크 진화 적용 (안전 한계 내): %s", " | ".join(applied))
 
             logger.info(
                 "진화 세대 #%d 완료: 적합도=%.1f (규칙 +%d -%d)",

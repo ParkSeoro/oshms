@@ -500,11 +500,17 @@ class EvolutionEngine:
     def evolve_risk_params(self, trades: list[dict]) -> dict:
         """거래 결과를 분석하여 리스크 파라미터를 자동 진화시킨다.
 
-        - 손절이 너무 자주 → 손절폭 확대
-        - 손절이 너무 드물고 큰 손실 → 손절폭 축소
-        - 트레일링이 너무 일찍 → 트레일링 확대
-        - 익절이 너무 일찍 → 익절 상향
+        v4.5: 안전 한계 추가 — 진화가 위험 수준까지 가지 않도록 제한.
+        - 손절: 최대 -2.5% (절대 이보다 넓게 확대 불가)
+        - 트레일링: 최대 2.0%
+        - 익절: 최소 1.0%, 최대 5.0%
         """
+        # 안전 한계 상수
+        STOP_LOSS_HARD_MIN = -2.5   # 절대 이보다 넓은 손절 허용 안 함
+        TRAILING_HARD_MAX = 2.0     # 트레일링 최대
+        TAKE_PROFIT_HARD_MIN = 1.0  # 익절 최소
+        TAKE_PROFIT_HARD_MAX = 5.0  # 익절 최대
+
         sells = [t for t in trades if t.get("side") == "SELL"]
         if not sells:
             return self.state.risk_params
@@ -519,14 +525,13 @@ class EvolutionEngine:
                          if stop_losses else 0)
 
         if stop_rate > 30:
-            # 손절 너무 자주 → 폭 확대 (더 참기)
             old = rp["stop_loss_pct"]
-            rp["stop_loss_pct"] = max(-8.0, old - 0.5)
+            # v4.5: 안전 한계 적용 — -2.5% 이상으로 확대 불가
+            rp["stop_loss_pct"] = max(STOP_LOSS_HARD_MIN, old - 0.3)
             changes.append(f"손절폭 확대: {old:.1f}%→{rp['stop_loss_pct']:.1f}% (빈도={stop_rate:.0f}%)")
         elif stop_rate < 5 and any(t.get("profit_rate", 0) < -5 for t in sells):
-            # 손절 드문데 큰 손실 있음 → 폭 축소
             old = rp["stop_loss_pct"]
-            rp["stop_loss_pct"] = min(-1.5, old + 0.5)
+            rp["stop_loss_pct"] = min(-1.5, old + 0.3)
             changes.append(f"손절폭 축소: {old:.1f}%→{rp['stop_loss_pct']:.1f}%")
 
         # 트레일링 분석
@@ -534,15 +539,14 @@ class EvolutionEngine:
         if trailing_sells:
             trailing_profits = [t.get("profit_rate", 0) for t in trailing_sells]
             avg_trail = sum(trailing_profits) / len(trailing_profits)
-            if avg_trail < 2.0 and len(trailing_sells) > 3:
-                # 트레일링이 너무 일찍 발동 → 확대
+            if avg_trail < 1.0 and len(trailing_sells) > 3:
                 old = rp["trailing_base"]
-                rp["trailing_base"] = min(6.0, old + 0.5)
+                # v4.5: 안전 한계 — 최대 2.0%
+                rp["trailing_base"] = min(TRAILING_HARD_MAX, old + 0.3)
                 changes.append(f"트레일링 확대: {old:.1f}%→{rp['trailing_base']:.1f}% (평균수익={avg_trail:.1f}%)")
-            elif avg_trail > 8.0:
-                # 트레일링 적절 — 약간 축소 가능
+            elif avg_trail > 3.0:
                 old = rp["trailing_base"]
-                rp["trailing_base"] = max(2.0, old - 0.3)
+                rp["trailing_base"] = max(0.5, old - 0.2)
                 changes.append(f"트레일링 축소: {old:.1f}%→{rp['trailing_base']:.1f}% (평균수익={avg_trail:.1f}%)")
 
         # 익절 분석
@@ -550,15 +554,15 @@ class EvolutionEngine:
         if len(profit_sells) >= 5:
             max_profit = max(t.get("profit_rate", 0) for t in profit_sells)
             avg_profit = sum(t.get("profit_rate", 0) for t in profit_sells) / len(profit_sells)
-            # 최대 수익이 익절 라인의 2배 이상 → 익절 상향
             if max_profit > rp["take_profit_pct"] * 2:
                 old = rp["take_profit_pct"]
-                rp["take_profit_pct"] = min(40.0, old + 2.0)
-                changes.append(f"익절 상향: {old:.0f}%→{rp['take_profit_pct']:.0f}% (최대수익={max_profit:.1f}%)")
-            elif max_profit < rp["take_profit_pct"] * 0.5 and avg_profit < 3.0:
+                # v4.5: 안전 한계 — 최대 5%
+                rp["take_profit_pct"] = min(TAKE_PROFIT_HARD_MAX, old + 0.5)
+                changes.append(f"익절 상향: {old:.1f}%→{rp['take_profit_pct']:.1f}% (최대수익={max_profit:.1f}%)")
+            elif avg_profit < 1.0:
                 old = rp["take_profit_pct"]
-                rp["take_profit_pct"] = max(10.0, old - 2.0)
-                changes.append(f"익절 하향: {old:.0f}%→{rp['take_profit_pct']:.0f}% (평균수익={avg_profit:.1f}%)")
+                rp["take_profit_pct"] = max(TAKE_PROFIT_HARD_MIN, old - 0.3)
+                changes.append(f"익절 하향: {old:.1f}%→{rp['take_profit_pct']:.1f}% (평균수익={avg_profit:.1f}%)")
 
         if changes:
             self.state.risk_evolution_history.append({

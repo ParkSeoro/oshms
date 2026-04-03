@@ -169,19 +169,20 @@ class ExpertStrategy(BaseStrategy):
                 for key in self.WEIGHTS:
                     self.WEIGHTS[key] /= total
 
-        # 2. 매매 임계값 조정
+        # 2. 매매 임계값 조정 (v4.5: 안전 한계 강화)
         if adjustments.get("buy_threshold_adj"):
             adj = adjustments["buy_threshold_adj"]
             if isinstance(adj, (int, float)):
                 old = self.BUY_THRESHOLD
-                self.BUY_THRESHOLD = max(0.05, min(0.40, old + adj))
+                # v4.5: 최소 0.15 — 이보다 낮으면 아무 종목이나 매수하게 됨
+                self.BUY_THRESHOLD = max(0.15, min(0.40, old + adj))
                 changes.append(f"buy_thr: {old:.2f}→{self.BUY_THRESHOLD:.2f}")
 
         if adjustments.get("sell_threshold_adj"):
             adj = adjustments["sell_threshold_adj"]
             if isinstance(adj, (int, float)):
                 old = self.SELL_THRESHOLD
-                self.SELL_THRESHOLD = max(-0.30, min(-0.03, old + adj))
+                self.SELL_THRESHOLD = max(-0.20, min(-0.03, old + adj))
                 changes.append(f"sell_thr: {old:.2f}→{self.SELL_THRESHOLD:.2f}")
 
         if changes:
