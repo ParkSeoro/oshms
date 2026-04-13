@@ -53,6 +53,10 @@ class AutoTrader:
         # v4.6: 트레일링 베이스 — 진화가 조정하는 값. check_trailing_stop()에 전달됨
         self._trailing_base: float = 0.5
 
+        # v4.7: 당일 손실 매도한 종목 — 같은 날 재매수 금지 (whipsaw 방지)
+        # {stock_code: "YYYY-MM-DD"} — 날짜가 바뀌면 해제
+        self._loss_stocks_today: dict[str, str] = {}
+
         # 진화 엔진 (Level 0: 파라미터 진화)
         self._evolution = None
         self._trades_since_evolution = 0
@@ -840,6 +844,57 @@ class AutoTrader:
         if self._cycle_count % 10 == 0:
             self._log_status()
 
+    def _is_blocked_today(self, stock_code: str) -> bool:
+        """당일 손실 매도한 종목인지 확인 (v4.7 whipsaw 방지).
+
+        날짜가 바뀐 항목은 자동 정리.
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        # 날짜 바뀐 항목 정리
+        stale = [c for c, d in self._loss_stocks_today.items() if d != today]
+        for c in stale:
+            del self._loss_stocks_today[c]
+        return stock_code in self._loss_stocks_today
+
+    def _collect_position_snapshots(self) -> dict[str, dict]:
+        """보유 종목들의 현재 기술적 스냅샷을 수집한다 (v4.7).
+
+        논지 기반 매도(check_thesis_broken)에서 사용.
+        각 종목의 최신 RSI/추세/모멘텀/거래량/MACD를 반환.
+        """
+        snapshots = {}
+        if not isinstance(self.strategy, ExpertStrategy):
+            return snapshots
+        if not self.order_manager.positions:
+            return snapshots
+
+        for code in list(self.order_manager.positions.keys()):
+            try:
+                # v4.2: 시장별 API 분기
+                if self.market != "KR":
+                    cp = self.api.get_overseas_price(self.market, code)
+                    cs = self.api.get_overseas_daily_chart(self.market, code, count=30)
+                else:
+                    cp = self.api.get_current_price(code)
+                    cs = self.api.get_minute_chart(code, period="3")
+                    if not cs or len(cs) < 10:
+                        cs = self.api.get_daily_chart(code, count=30)
+                if not cp or not cs or len(cs) < 10:
+                    continue
+
+                sorted_candles = self.strategy._ensure_ascending(cs)
+                t = self.strategy.technical.analyze(sorted_candles, cp.get("price", 0))
+                snapshots[code] = {
+                    "rsi": float(t.rsi),
+                    "trend_score": float(t.trend_score),
+                    "momentum_score": float(t.momentum_score),
+                    "volume_ratio": float(t.volume_ratio),
+                    "macd_cross": str(t.macd_cross or ""),
+                }
+            except Exception as e:
+                logger.debug("[%s] 스냅샷 수집 실패: %s", code, e)
+        return snapshots
+
     def _check_risk_management(self) -> None:
         """리스크 관리: 상승여력 재분석, 트레일링 스탑, 손절, 장마감.
 
@@ -879,23 +934,48 @@ class AutoTrader:
                 except Exception as e:
                     logger.error("[%s] 목표가 매도 실패: %s", code, e)
 
-        # ── 3. 손절 매도 (v4.6: 진화된 settings.stop_loss_pct 실제 반영) ──
-        for code in self.order_manager.check_stop_loss(
-            stop_loss_pct=getattr(self.settings, "stop_loss_pct", -2.5)
-        ):
+        # ── 2.5 논지 기반 매도 (v4.7 신규): "왜 샀는지"의 근거가 깨졌는가? ──
+        # 매수 시 판단한 근거(RSI/추세/모멘텀/거래량/MACD)가 여전히 유효한지 확인.
+        # 근거 깨짐 + 손실 → 즉시 매도 (잘못된 판단 빠른 정정)
+        # 근거 유효 + 일시 하락 → 홀드 (whipsaw 방지)
+        thesis_snaps = self._collect_position_snapshots()
+        if thesis_snaps:
+            for code, broken_reason in self.order_manager.check_thesis_broken(thesis_snaps):
+                try:
+                    pos = self.order_manager.positions.get(code)
+                    if not pos:
+                        continue
+                    pr = pos.profit_rate
+                    # 근거 깨짐 + 손실 중 → 매도 (수익 중이면 트레일링에 맡김)
+                    if pr < -0.5:
+                        logger.info(
+                            "🔴 논지 매도: %s(%s) 수익률=%.2f%% | 근거깨짐: %s",
+                            pos.stock_name, code, pr, broken_reason,
+                        )
+                        self.order_manager.execute_sell(
+                            code, f"논지깨짐({pr:.1f}%|{broken_reason})"
+                        )
+                        self._on_trade_completed(code, pr, "SELL")
+                except Exception as e:
+                    logger.error("[%s] 논지 매도 실패: %s", code, e)
+
+        # ── 3. 하드 손절 (v4.7: -2.5%→-4% 완화, 진짜 위험할 때만 작동하는 안전망) ──
+        # 논지 체크가 1차 방어선. 하드 손절은 극단적 낙폭에서만 발동하는 최종 안전망.
+        hard_stop_pct = getattr(self.settings, "stop_loss_pct", -4.0)
+        for code in self.order_manager.check_stop_loss(stop_loss_pct=hard_stop_pct):
             try:
                 pos = self.order_manager.positions.get(code)
                 if not pos:
                     continue
                 pr = pos.profit_rate
                 logger.warning(
-                    "⚠ 손절 실행: %s(%s) 수익률=%.2f%% → 손실 최소화",
+                    "⚠ 하드 손절 실행: %s(%s) 수익률=%.2f%% → 극단 낙폭 차단",
                     pos.stock_name, code, pr,
                 )
-                self.order_manager.execute_sell(code, f"손절({pr:.1f}%)")
+                self.order_manager.execute_sell(code, f"하드손절({pr:.1f}%)")
                 self._on_trade_completed(code, pr, "SELL")
             except Exception as e:
-                logger.error("[%s] 손절 매도 실패: %s", code, e)
+                logger.error("[%s] 하드 손절 매도 실패: %s", code, e)
 
         # ── 3.5 익절 매도 (v4.6: 진화된 settings.take_profit_pct 실제 반영) ──
         for code in self.order_manager.check_take_profit(
@@ -915,7 +995,9 @@ class AutoTrader:
             except Exception as e:
                 logger.error("[%s] 익절 매도 실패: %s", code, e)
 
-        # ── 3.7 시간 기반 손실 종목 정리 (v4.4: 20분 이상 손실이면 정리) ──
+        # ── 3.7 시간 기반 정리 (v4.7: 45분, 손실 -1.5% 이상일 때만) ──
+        # 논지가 유효해도 오랫동안 진행 없으면 기회비용 고려해서 정리.
+        # 단, 진짜 의미 있는 손실(-1.5%+)일 때만. 작은 흔들림은 버틴다.
         for code, pos in list(self.order_manager.positions.items()):
             try:
                 buy_time = datetime.strptime(pos.buy_time, "%H:%M:%S")
@@ -923,13 +1005,14 @@ class AutoTrader:
                 buy_dt = now.replace(hour=buy_time.hour, minute=buy_time.minute,
                                      second=buy_time.second)
                 elapsed_min = (now - buy_dt).total_seconds() / 60
-                if elapsed_min >= 20 and pos.profit_rate < -0.3:  # v4.4: 30분/-0.5→20분/-0.3
+                # v4.7: 20분/-0.3% → 45분/-1.5% (논지 유효 시 충분한 시간 보장)
+                if elapsed_min >= 45 and pos.profit_rate < -1.5:
                     pr = pos.profit_rate
                     logger.info(
-                        "⏰ 시간 손절: %s(%s) %.0f분 보유, 수익률=%.2f%% → 정리",
+                        "⏰ 시간 정리: %s(%s) %.0f분 보유, 수익률=%.2f%% → 기회비용 회수",
                         pos.stock_name, code, elapsed_min, pr,
                     )
-                    self.order_manager.execute_sell(code, f"시간손절({elapsed_min:.0f}분,{pr:.1f}%)")
+                    self.order_manager.execute_sell(code, f"시간정리({elapsed_min:.0f}분,{pr:.1f}%)")
                     self._on_trade_completed(code, pr, "SELL")
             except (ValueError, TypeError):
                 pass
@@ -1042,9 +1125,14 @@ class AutoTrader:
         # v4.4: 매도 후 쿨다운 — 같은 종목 즉시 재매수 방지
         if stock_code:
             if profit_rate < 0:
-                # 손실 매도: 30분 쿨다운 (같은 종목 손실 반복 방지)
-                cooldown_sec = 1800
-                logger.info("⏸ 쿨다운 설정: %s → %d분 (손실 매도)", stock_code, cooldown_sec // 60)
+                # v4.7: 손실 매도 → 당일 재매수 금지 (whipsaw 원천 차단)
+                today = datetime.now().strftime("%Y-%m-%d")
+                self._loss_stocks_today[stock_code] = today
+                logger.info(
+                    "🚫 당일 재매수 금지: %s (손실 %.2f%% 매도, %s 까지)",
+                    stock_code, profit_rate, today,
+                )
+                cooldown_sec = 1800  # 백업 쿨다운 (날짜 바뀌면 해제되므로)
             else:
                 # 수익 매도: 10분 쿨다운 (단기 급등 후 하락 방지)
                 cooldown_sec = 600
@@ -1143,6 +1231,9 @@ class AutoTrader:
         for stock_code in stocks[:10]:  # 상위 10종목만 스캔
             if stock_code in self.order_manager.positions:
                 continue
+            # v4.7: 당일 손실 매도 종목 차단 (whipsaw 방지)
+            if self._is_blocked_today(stock_code):
+                continue
             if stock_code in self._cooldown_stocks:
                 if time.time() < self._cooldown_stocks[stock_code]:
                     continue
@@ -1195,14 +1286,24 @@ class AutoTrader:
                         f"{prev_high:,}", f"{recent_close:,}",
                     )
 
-                    # ATR 가져오기
+                    # ATR + 논지 스냅샷 (v4.7)
                     atr_value = 0.0
+                    thesis = {}
                     if isinstance(self.strategy, ExpertStrategy):
                         try:
                             analysis = self.strategy.full_analysis(
                                 stock_code, stock_name, candles, current)
                             if analysis.technical:
-                                atr_value = analysis.technical.atr
+                                t = analysis.technical
+                                atr_value = t.atr
+                                thesis = {
+                                    "rsi": getattr(t, "rsi", 50.0),
+                                    "trend_score": getattr(t, "trend_score", 0.0),
+                                    "momentum_score": getattr(t, "momentum_score", 0.0),
+                                    "volume_ratio": volume_ratio,
+                                    "macd_cross": getattr(t, "macd_cross", ""),
+                                    "regime": self._market_ctx.regime if self._market_ctx else "",
+                                }
                         except Exception:
                             pass
 
@@ -1215,6 +1316,7 @@ class AutoTrader:
                         strength=strength, atr=atr_value,
                         per=current.get("per", 0),
                         pbr=current.get("pbr", 0),
+                        thesis=thesis,
                     )
 
                     if not self.order_manager.can_buy():
@@ -1233,6 +1335,11 @@ class AutoTrader:
         # ── 1단계: 기본 검증 (데이터 + 용량) ──
         if not self.order_manager.can_buy() and stock_code not in self.order_manager.positions:
             return  # 매수 불가 + 보유도 아님 → 분석 불필요
+
+        # v4.7: 당일 손실 매도 종목은 분석조차 안 함 (보유 중 아닐 때만)
+        if (stock_code not in self.order_manager.positions
+                and self._is_blocked_today(stock_code)):
+            return
 
         if stock_code in self._cooldown_stocks:
             if time.time() < self._cooldown_stocks[stock_code]:
@@ -1330,11 +1437,30 @@ class AutoTrader:
             if target_price > 0 and current_price["price"] > 0:
                 estimated_upside = (target_price - current_price["price"]) / current_price["price"] * 100
 
+            # v4.7: 매수 논지 스냅샷 — "왜 샀는지"의 근거를 저장
+            thesis = {}
+            if isinstance(self.strategy, ExpertStrategy) and analysis.technical:
+                t = analysis.technical
+                thesis = {
+                    "rsi": getattr(t, "rsi", 50.0),
+                    "trend_score": getattr(t, "trend_score", 0.0),
+                    "momentum_score": getattr(t, "momentum_score", 0.0),
+                    "volume_ratio": getattr(t, "volume_ratio", 1.0),
+                    "macd_cross": getattr(t, "macd_cross", ""),
+                    "regime": self._market_ctx.regime if self._market_ctx else "",
+                }
+
             logger.info(
                 "▶ 매수 실행: %s(%s) %s원 | 강도=%.2f | %s",
                 stock_name, stock_code, f"{current_price['price']:,}",
                 signal.strength, signal.reason,
             )
+            if thesis:
+                logger.info(
+                    "  매수근거 스냅샷: RSI=%.0f 추세=%.2f 모멘텀=%.2f 거래량=%.1fx MACD=%s",
+                    thesis["rsi"], thesis["trend_score"], thesis["momentum_score"],
+                    thesis["volume_ratio"], thesis["macd_cross"] or "-",
+                )
 
             self.order_manager.execute_buy(
                 stock_code, stock_name, current_price["price"], signal.reason,
@@ -1342,6 +1468,7 @@ class AutoTrader:
                 target_price=target_price, estimated_upside=estimated_upside,
                 per=current_price.get("per", 0),
                 pbr=current_price.get("pbr", 0),
+                thesis=thesis,
             )
 
         # 매도: 전략이 SELL 결정 + 보유 중 + 매도 적합 → 바로 실행

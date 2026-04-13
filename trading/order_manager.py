@@ -33,6 +33,16 @@ class Position:
     target_price: int = 0  # 전략 분석 기반 목표가
     estimated_upside: float = 0.0  # 예상 상승여력 (%)
 
+    # v4.7: 매수 논지 스냅샷 (Thesis-based Trading)
+    # 매수 시점의 기술적 근거를 저장하여, 나중에 "왜 샀는지"의 근거가
+    # 여전히 유효한지 확인한다. 근거가 깨지면 매도, 유효하면 홀드.
+    buy_rsi: float = 50.0
+    buy_trend_score: float = 0.0      # -1.0 ~ +1.0
+    buy_momentum_score: float = 0.0   # -1.0 ~ +1.0
+    buy_volume_ratio: float = 1.0     # 평균 대비 배수
+    buy_macd_cross: str = ""          # "golden" | "dead" | ""
+    buy_regime: str = ""              # 매수 시 시장 레짐
+
     @property
     def profit_rate(self) -> float:
         """수익률(%)."""
@@ -234,8 +244,14 @@ class OrderManager:
         target_price: int = 0, estimated_upside: float = 0.0,
         per: float = 0, pbr: float = 0,
         size_mult: float = 1.0,
+        thesis: dict | None = None,
     ) -> bool:
-        """매수를 실행한다."""
+        """매수를 실행한다.
+
+        v4.7: thesis 인자 추가 — 매수 근거 스냅샷 저장.
+            thesis = {rsi, trend_score, momentum_score, volume_ratio,
+                      macd_cross, regime}
+        """
         if not self.can_buy():
             logger.warning("최대 보유 종목 수 초과 (%d종목)", self.settings.max_hold_count)
             return False
@@ -257,7 +273,8 @@ class OrderManager:
         if not result["success"]:
             return False
 
-        # 포지션 등록
+        # 포지션 등록 (v4.7: 논지 스냅샷 저장)
+        thesis = thesis or {}
         self.positions[stock_code] = Position(
             stock_code=stock_code,
             stock_name=stock_name,
@@ -271,6 +288,12 @@ class OrderManager:
             atr_at_buy=atr,
             target_price=target_price,
             estimated_upside=estimated_upside,
+            buy_rsi=float(thesis.get("rsi", 50.0)),
+            buy_trend_score=float(thesis.get("trend_score", 0.0)),
+            buy_momentum_score=float(thesis.get("momentum_score", 0.0)),
+            buy_volume_ratio=float(thesis.get("volume_ratio", 1.0)),
+            buy_macd_cross=str(thesis.get("macd_cross", "")),
+            buy_regime=str(thesis.get("regime", "")),
         )
 
         # 거래 기록
@@ -339,25 +362,25 @@ class OrderManager:
     def check_stop_loss(self, stop_loss_pct: float | None = None) -> list[str]:
         """손절 조건을 확인하여 매도 대상 종목을 반환한다.
 
-        v4.6: 진화된 settings.stop_loss_pct를 실제로 반영.
-        - stop_loss_pct가 주어지면 그 값을 사용 (절대상한 -2.5%)
-        - None이면 settings.stop_loss_pct를 참조, 그것도 없으면 -2.5%
-        - ATR 동적 손절은 더 타이트하게만 적용 (최소 -1.5%).
+        v4.7: 하드 손절은 극단 낙폭 차단용 최종 안전망 역할.
+        - 논지 기반 매도(check_thesis_broken)가 1차 방어선
+        - 하드 손절은 -5.0% ~ -1.5% 범위 내에서 자유롭게 설정 가능
+        - None이면 settings.stop_loss_pct 참조, 그것도 없으면 -4.0%
         """
         targets = []
-        HARD_STOP_CAP = -2.5  # v4.6: 절대 상한 — 진화도 이보다 넓힐 수 없음
+        ABSOLUTE_EMERGENCY = -5.0  # v4.7: 절대 상한 — 플래시 크래시 방어선
+        MIN_TIGHTNESS = -1.5       # 가장 타이트한 손절 (너무 민감)
 
-        # v4.6: 진화/설정에서 주입된 손절 기준 적용
+        # 진화/설정에서 주입된 손절 기준 적용
         if stop_loss_pct is None:
-            stop_loss_pct = getattr(self.settings, "stop_loss_pct", HARD_STOP_CAP)
-        base_stop = max(HARD_STOP_CAP, stop_loss_pct)  # 안전 한계
+            stop_loss_pct = getattr(self.settings, "stop_loss_pct", -4.0)
+        base_stop = max(ABSOLUTE_EMERGENCY, min(MIN_TIGHTNESS, stop_loss_pct))
 
         for code, pos in self.positions.items():
-            # ATR 기반 동적 손절 (더 타이트하게)
+            # ATR 기반 동적 손절
             if pos.atr_at_buy > 0 and pos.avg_price > 0:
-                dynamic_stop_pct = -(pos.atr_at_buy * 2.0 / pos.avg_price * 100)
-                # 최소 -1.5%, 최대 base_stop (절대상한 적용)
-                stop_pct = max(base_stop, min(-1.5, dynamic_stop_pct))
+                dynamic_stop_pct = -(pos.atr_at_buy * 2.5 / pos.avg_price * 100)
+                stop_pct = max(base_stop, min(MIN_TIGHTNESS, dynamic_stop_pct))
             else:
                 stop_pct = base_stop
 
@@ -433,3 +456,66 @@ class OrderManager:
                     drop_from_high, effective_trail,
                 )
         return targets
+
+    def check_thesis_broken(self, snapshots: dict[str, dict]) -> list[tuple[str, str]]:
+        """v4.7 논지 기반 매도: 매수 근거가 깨진 종목을 찾는다.
+
+        "오를 것이라 판단해서 샀는데, 그 판단 근거가 여전히 유효한가?"를 확인한다.
+        근거가 깨졌으면 손실이 작아도 매도(잘못된 판단 빠른 정정).
+        근거가 유효하면 일시 하락을 버틴다(whipsaw 방지).
+
+        근거 깨짐 조건 (OR):
+          1. 추세 역전: 매수 시 추세점수 > 0 → 현재 추세점수 < -0.3
+          2. 모멘텀 소진: 매수 시 모멘텀 > 0 → 현재 < -0.2
+          3. RSI 과매수 이탈: 매수 후 RSI 70 넘고 다시 50 밑으로 떨어짐 (정점 이탈)
+          4. 거래량 급감: 매수 시 1.5배 이상 → 현재 0.5배 이하 (관심 사라짐)
+          5. MACD 데드크로스: 매수 시 골든크로스 → 현재 데드크로스
+
+        Args:
+            snapshots: {stock_code: {rsi, trend_score, momentum_score,
+                        volume_ratio, macd_cross}}
+
+        Returns:
+            [(stock_code, broken_reason), ...] — 논지 깨진 종목 리스트
+        """
+        broken = []
+        for code, pos in self.positions.items():
+            snap = snapshots.get(code)
+            if not snap:
+                continue
+
+            reasons = []
+
+            # 1. 추세 역전
+            cur_trend = snap.get("trend_score", 0)
+            if pos.buy_trend_score > 0.1 and cur_trend < -0.3:
+                reasons.append(f"추세역전({pos.buy_trend_score:.2f}→{cur_trend:.2f})")
+
+            # 2. 모멘텀 소진
+            cur_mom = snap.get("momentum_score", 0)
+            if pos.buy_momentum_score > 0.1 and cur_mom < -0.2:
+                reasons.append(f"모멘텀소진({pos.buy_momentum_score:.2f}→{cur_mom:.2f})")
+
+            # 3. RSI 정점 이탈 (매수 후 과매수였다가 50 밑으로)
+            cur_rsi = snap.get("rsi", 50)
+            # 매수 시 RSI가 건강한 구간(40~65)이었는데 지금 35 밑 → 하락 전환
+            if 40 <= pos.buy_rsi <= 65 and cur_rsi < 35:
+                reasons.append(f"RSI하락전환({pos.buy_rsi:.0f}→{cur_rsi:.0f})")
+
+            # 4. 거래량 급감
+            cur_vol = snap.get("volume_ratio", 1.0)
+            if pos.buy_volume_ratio >= 1.5 and cur_vol <= 0.5:
+                reasons.append(f"관심이탈({pos.buy_volume_ratio:.1f}x→{cur_vol:.1f}x)")
+
+            # 5. MACD 반전
+            cur_macd = snap.get("macd_cross", "")
+            if pos.buy_macd_cross == "golden" and cur_macd == "dead":
+                reasons.append("MACD데드크로스")
+
+            if reasons:
+                broken.append((code, " / ".join(reasons)))
+                logger.info(
+                    "📉 논지 깨짐: %s(%s) 수익률=%.2f%% | %s",
+                    pos.stock_name, code, pos.profit_rate, " / ".join(reasons),
+                )
+        return broken
