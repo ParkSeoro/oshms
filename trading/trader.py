@@ -147,8 +147,8 @@ class AutoTrader:
         self._init_evolution()
 
         logger.info("=" * 70)
-        logger.info("  OSHMS 자동 매매 시스템 v3.2 가동")
-        logger.info("  (워렌 버핏 가치투자 + 고급 기술분석 융합 전략)")
+        logger.info("  OSHMS 자동 매매 시스템 v4.7 가동")
+        logger.info("  (논지 기반 매매 + 당일 재매수 금지 — whipsaw 방지)")
         logger.info("=" * 70)
         mode_str = "모의투자" if self.settings.is_mock else "실전투자"
         logger.info("모드: %s | API: %s", mode_str, self.settings.base_url[:35])
