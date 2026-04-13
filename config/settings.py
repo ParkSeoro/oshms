@@ -71,6 +71,28 @@ class Settings:
             openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         )
 
+    def reload_from_env(self, env_path: str | None = None) -> None:
+        """v4.7: 현재 객체를 제자리에서 갱신한다 (hot-reload).
+
+        기존 ``from_env()``는 새 ``Settings`` 객체를 만들어 반환하지만,
+        실행 중인 ``AutoTrader``, ``OrderManager``, ``KISApi`` 등이
+        이미 기존 객체의 **참조**를 붙들고 있기 때문에 새 객체로 바꿔치기해도
+        돌고 있는 매매 로직엔 전혀 반영되지 않는다.
+
+        이 메서드는 자신(self)의 필드를 직접 갱신하므로,
+        같은 객체를 참조하는 모든 컴포넌트가 다음 틱부터 새 값을 본다.
+        """
+        fresh = Settings.from_env(env_path)
+        # base_url은 __post_init__에서 is_mock을 따라 결정되므로 같이 갱신
+        for field_name in (
+            "app_key", "app_secret", "account_no", "is_mock",
+            "max_buy_amount", "max_hold_count",
+            "stop_loss_pct", "take_profit_pct", "initial_capital",
+            "trading_start_time", "trading_end_time", "log_level",
+            "openai_api_key", "openai_model", "base_url",
+        ):
+            setattr(self, field_name, getattr(fresh, field_name))
+
     @property
     def account_number(self) -> str:
         """계좌번호 앞 8자리."""

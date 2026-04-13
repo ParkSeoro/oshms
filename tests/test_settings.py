@@ -114,5 +114,34 @@ class TestSettings(unittest.TestCase):
                 os.environ.pop(key, None)
 
 
+    def test_reload_from_env_mutates_in_place(self):
+        """v4.7: reload_from_env()는 기존 객체 참조를 유지한 채 필드만 갱신해야 한다.
+        실행 중인 트레이더가 붙든 Settings 참조에 즉시 반영되어야 하므로.
+        """
+        original = Settings(
+            app_key="old", app_secret="old", account_no="00000000-00",
+            max_buy_amount=10_000, max_hold_count=1,
+            stop_loss_pct=-2.0, take_profit_pct=1.0,
+            initial_capital=50_000,
+        )
+        holder = original  # 다른 곳에서 붙든 참조
+
+        os.environ["KIS_APP_KEY"] = "new_key"
+        os.environ["MAX_BUY_AMOUNT"] = "50000"
+        os.environ["STOP_LOSS_PCT"] = "-4.0"
+        try:
+            original.reload_from_env()
+        finally:
+            for k in ["KIS_APP_KEY", "MAX_BUY_AMOUNT", "STOP_LOSS_PCT"]:
+                os.environ.pop(k, None)
+
+        # 참조 동일성 — 같은 객체여야 함
+        self.assertIs(holder, original)
+        # 값이 실제로 갱신되었는가
+        self.assertEqual(original.app_key, "new_key")
+        self.assertEqual(original.max_buy_amount, 50_000)
+        self.assertEqual(original.stop_loss_pct, -4.0)
+
+
 if __name__ == "__main__":
     unittest.main()

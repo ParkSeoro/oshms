@@ -54,9 +54,27 @@ def _get_api():
 
 
 def _reset_api():
-    """설정 변경 시 API 인스턴스를 재생성한다."""
+    """v4.7: 설정 변경 시 API만 재생성. Settings 객체는 유지하고 필드만 갱신.
+
+    ``_state["settings"]``를 None으로 만들어 재생성하면 실행 중인 트레이더가
+    예전 Settings 참조를 계속 물고 있게 되어 UI에서 바꾼 값이
+    실제 매매에 반영되지 않는 버그의 원인이 된다.
+    """
+    s = _state.get("settings")
+    if s is not None:
+        s.reload_from_env()  # 제자리 갱신 — 모든 참조 홀더가 새 값을 봄
     _state["api"] = None
-    _state["settings"] = None
+
+    # 실행 중인 트레이더의 API 참조도 교체 (자격증명 바뀌었을 수 있음)
+    trader = _state.get("trader")
+    if trader is not None:
+        try:
+            new_api = _get_api()
+            trader.api = new_api
+            if hasattr(trader, "order_manager"):
+                trader.order_manager.api = new_api
+        except Exception:
+            pass
 
 
 # ─────────────────── 페이지 ───────────────────

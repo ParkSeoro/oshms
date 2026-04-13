@@ -1737,8 +1737,28 @@ class OshmsApp:
         self.SETTINGS_FILE.write_text(
             json.dumps(prefs, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        self.settings = Settings.from_env()
-        self._reset_api()  # 설정 변경 시 API 재연결
+        # v4.7: 제자리 갱신 — 새 객체로 바꿔치기하면 실행 중인 트레이더/주문관리자가
+        # 예전 Settings 참조를 계속 물고 있어서 설정 변경이 실제 매매에 반영 안 됨.
+        # reload_from_env()는 self의 필드만 수정하므로 모든 참조 홀더가 즉시 새 값을 봄.
+        self.settings.reload_from_env()
+
+        # 저장 전 검증 — .env가 v4.7 설계를 어기는 값이면 경고
+        errors = self.settings.validate()
+        if errors:
+            messagebox.showwarning(
+                "설정 경고",
+                "다음 항목이 설계 기준에 어긋납니다:\n\n" + "\n".join(f"• {e}" for e in errors))
+
+        self._reset_api()  # 설정 변경 시 API 재연결 (자격증명 갱신)
+        # 실행 중인 트레이더의 API 참조도 교체 (없으면 조용히 무시)
+        if self._trader is not None:
+            new_api = self._get_api()
+            try:
+                self._trader.api = new_api
+                if hasattr(self._trader, "order_manager"):
+                    self._trader.order_manager.api = new_api
+            except Exception:
+                pass
 
         # 모드 뱃지 즉시 업데이트
         c = self.c
@@ -1747,7 +1767,8 @@ class OshmsApp:
         self.mode_label.config(text=mode_text, fg=mode_color)
 
         mode_str = "모의투자" if self.settings.is_mock else "실전투자"
-        messagebox.showinfo("설정", f"설정이 저장되었습니다.\n투자 모드: {mode_str}")
+        running_note = " (실행 중인 매매에 즉시 반영됨)" if self._is_trading else ""
+        messagebox.showinfo("설정", f"설정이 저장되었습니다.{running_note}\n투자 모드: {mode_str}")
 
     def _validate_settings(self):
         errors = self.settings.validate()
@@ -2342,7 +2363,8 @@ class OshmsApp:
             from trading.trader import AutoTrader
             from trading.state_manager import StateManager
 
-            self.settings = Settings.from_env()
+            # v4.7: 매매 시작 전 .env 최신 값을 제자리 반영
+            self.settings.reload_from_env()
             self._reset_api()
             api = self._get_api()
             strategy_map = {
