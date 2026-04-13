@@ -1619,7 +1619,7 @@ body::after {
     <div class="glass-card">
       <div class="section-header">
         <div class="section-title">
-          <span class="title-icon">&#128161;</span> v3.2 고급 기능
+          <span class="title-icon">&#128161;</span> 학습/최적화 엔진
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
@@ -2463,7 +2463,15 @@ body::after {
   function loadV32Features() {
     fetch('/api/v32/ensemble').then(function(r) { return r.json(); }).then(function(d) {
       if (d.error) { $('v32Ensemble').textContent = '미활성'; return; }
-      var weights = d.weights || d.dynamic_weights || {};
+      // 백엔드 응답 형태: {expert: {weight, win_rate, ...}, scalping: {...}, momentum: {...}}
+      // 또는 평평한 {weights: {...}} / {dynamic_weights: {...}} 둘 다 지원.
+      var weights = d.weights || d.dynamic_weights || null;
+      if (!weights) {
+        weights = {};
+        ['expert', 'scalping', 'momentum'].forEach(function(k) {
+          if (d[k] && d[k].weight != null) weights[k] = d[k].weight;
+        });
+      }
       var parts = [];
       for (var k in weights) { parts.push(k + ' ' + ((weights[k] || 0) * 100).toFixed(0) + '%'); }
       $('v32Ensemble').innerHTML = parts.length ? parts.join('<br>') : '활성 (가중치 미설정)';

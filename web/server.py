@@ -740,12 +740,27 @@ def api_trades():
         return jsonify({"trades": [], "error": str(e)})
 
 
+def _live_or_fresh(trader_attr: str, fallback_cls):
+    """v4.7: 실행 중인 트레이더가 들고 있는 인스턴스를 우선 반환.
+
+    없으면 디스크 상태를 로드한 새 인스턴스 반환. 기존 구현은 항상 새
+    인스턴스를 만들어 트레이더가 메모리에서 쌓은 상태(아직 파일에 저장되지
+    않은 변경분)를 볼 수 없었음.
+    """
+    trader = _state.get("trader")
+    if trader is not None:
+        live = getattr(trader, trader_attr, None)
+        if live is not None:
+            return live
+    return fallback_cls()
+
+
 @app.route("/api/v32/ensemble")
 def api_ensemble():
     """v3.2: 전략 앙상블 현황."""
     try:
         from strategy.combined import CombinedStrategy
-        ensemble = CombinedStrategy()
+        ensemble = _live_or_fresh("_ensemble", CombinedStrategy)
         return jsonify(ensemble.get_ensemble_summary())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -756,7 +771,7 @@ def api_qlearning():
     """v3.2: Q-Learning 현황."""
     try:
         from learning.q_learning import QLearningAgent
-        agent = QLearningAgent()
+        agent = _live_or_fresh("_q_agent", QLearningAgent)
         return jsonify(agent.get_summary())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -767,7 +782,7 @@ def api_portfolio():
     """v3.2: 포트폴리오 최적화 현황."""
     try:
         from trading.portfolio_optimizer import PortfolioOptimizer
-        optimizer = PortfolioOptimizer()
+        optimizer = _live_or_fresh("_portfolio_optimizer", PortfolioOptimizer)
         return jsonify(optimizer.get_portfolio_report())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -778,7 +793,7 @@ def api_evolution():
     """v3.2: 코드 진화 + 매매 복기 현황."""
     try:
         from learning.code_evolution import CodeEvolutionEngine
-        engine = CodeEvolutionEngine()
+        engine = _live_or_fresh("_code_evolution", CodeEvolutionEngine)
         summary = engine.get_evolution_summary()
         summary["review_report"] = engine.get_trade_review_report()
         return jsonify(summary)
