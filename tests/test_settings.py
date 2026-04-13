@@ -13,9 +13,11 @@ class TestSettings(unittest.TestCase):
         s = Settings()
         self.assertEqual(s.app_key, "")
         self.assertTrue(s.is_mock)  # 안전을 위해 기본값은 모의투자
-        self.assertEqual(s.max_buy_amount, 500_000)
-        self.assertEqual(s.stop_loss_pct, -2.0)
-        self.assertEqual(s.take_profit_pct, 3.0)
+        # v4.7: 자본 100,000 × 2종목 집중 투자 기준으로 정합
+        self.assertEqual(s.max_buy_amount, 50_000)
+        self.assertEqual(s.max_hold_count, 2)
+        self.assertEqual(s.stop_loss_pct, -4.0)
+        self.assertEqual(s.take_profit_pct, 1.5)
         self.assertEqual(s.initial_capital, 100_000)
 
     def test_mock_url(self):
@@ -42,16 +44,41 @@ class TestSettings(unittest.TestCase):
         self.assertTrue(len(errors) >= 3)  # key, secret, account
 
     def test_validate_valid(self):
+        # v4.7: 자본(100k) >= max_buy × hold_count, stop_loss <= -3.0
         s = Settings(
             app_key="test_key",
             app_secret="test_secret",
             account_no="12345678-01",
-            max_buy_amount=100_000,
-            stop_loss_pct=-2.0,
-            take_profit_pct=3.0,
+            max_buy_amount=50_000,
+            max_hold_count=2,
+            stop_loss_pct=-4.0,
+            take_profit_pct=1.5,
+            initial_capital=100_000,
         )
         errors = s.validate()
-        self.assertEqual(len(errors), 0)
+        self.assertEqual(len(errors), 0, f"예상치 못한 오류: {errors}")
+
+    def test_validate_capital_overflow(self):
+        # v4.7: max_buy × hold_count > capital 이면 오류
+        s = Settings(
+            app_key="k", app_secret="s", account_no="12345678-01",
+            max_buy_amount=100_000, max_hold_count=5,
+            stop_loss_pct=-4.0, take_profit_pct=1.5,
+            initial_capital=100_000,
+        )
+        errors = s.validate()
+        self.assertTrue(any("자본 부족" in e for e in errors))
+
+    def test_validate_shallow_stop_loss(self):
+        # v4.7: stop_loss -2.5 같은 얕은 값은 논지 매도 무력화
+        s = Settings(
+            app_key="k", app_secret="s", account_no="12345678-01",
+            max_buy_amount=50_000, max_hold_count=2,
+            stop_loss_pct=-2.5, take_profit_pct=1.5,
+            initial_capital=100_000,
+        )
+        errors = s.validate()
+        self.assertTrue(any("논지" in e for e in errors))
 
     def test_validate_bad_amounts(self):
         s = Settings(

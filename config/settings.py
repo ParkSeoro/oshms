@@ -18,8 +18,9 @@ class Settings:
     is_mock: bool = True
 
     # 매매 설정
-    # v4.3: 소액 자본에 맞게 조정 — 집중 투자(2종목), 넓은 손절, 빠른 익절
-    max_buy_amount: int = 500_000
+    # v4.7: initial_capital(100,000) × max_hold_count(2) 완전 활용 기준
+    # max_buy_amount = initial_capital / max_hold_count 로 수학적 일관성 유지
+    max_buy_amount: int = 50_000   # v4.7: 500,000→50,000 (자본 100,000의 50% = 2종목 집중)
     max_hold_count: int = 2        # v4.3: 5→2 (소액은 집중 투자가 유리)
     stop_loss_pct: float = -4.0    # v4.7: -2.5→-4.0 (하드 손절은 안전망, 논지매도가 주력)
     take_profit_pct: float = 1.5   # v4.3: 3.0→1.5 (작은 수익 자주 확정)
@@ -58,7 +59,7 @@ class Settings:
             app_secret=os.getenv("KIS_APP_SECRET", ""),
             account_no=os.getenv("KIS_ACCOUNT_NO", ""),
             is_mock=os.getenv("KIS_MOCK", "true").lower() == "true",
-            max_buy_amount=int(os.getenv("MAX_BUY_AMOUNT", "500000")),
+            max_buy_amount=int(os.getenv("MAX_BUY_AMOUNT", "50000")),
             max_hold_count=int(os.getenv("MAX_HOLD_COUNT", "2")),
             stop_loss_pct=float(os.getenv("STOP_LOSS_PCT", "-4.0")),
             take_profit_pct=float(os.getenv("TAKE_PROFIT_PCT", "1.5")),
@@ -95,4 +96,18 @@ class Settings:
             errors.append("STOP_LOSS_PCT는 음수여야 합니다.")
         if self.take_profit_pct <= 0:
             errors.append("TAKE_PROFIT_PCT는 양수여야 합니다.")
+        # v4.7: 설정 일관성 검증 — .env 잘못 편집으로 인한 v4.7 설계 무력화 방지
+        if self.max_buy_amount * self.max_hold_count > self.initial_capital:
+            errors.append(
+                f"자본 부족: MAX_BUY_AMOUNT({self.max_buy_amount:,}) × "
+                f"MAX_HOLD_COUNT({self.max_hold_count}) = "
+                f"{self.max_buy_amount * self.max_hold_count:,}원이 "
+                f"INITIAL_CAPITAL({self.initial_capital:,}원)을 초과합니다."
+            )
+        if self.stop_loss_pct > -3.0:
+            errors.append(
+                f"STOP_LOSS_PCT={self.stop_loss_pct}는 v4.7 논지 기반 매도 설계를 "
+                f"무력화합니다 (하드 손절이 논지 체크보다 먼저 발동). "
+                f"-3.0 이하를 권장 (기본값 -4.0)."
+            )
         return errors
