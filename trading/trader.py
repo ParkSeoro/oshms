@@ -50,6 +50,9 @@ class AutoTrader:
         self._cooldown_stocks: dict[str, float] = {}
         self._COOLDOWN_SECONDS = 300  # v4.0: 15분→5분 쿨다운 (빠른 재진입)
 
+        # v4.6: 트레일링 베이스 — 진화가 조정하는 값. check_trailing_stop()에 전달됨
+        self._trailing_base: float = 0.5
+
         # 진화 엔진 (Level 0: 파라미터 진화)
         self._evolution = None
         self._trades_since_evolution = 0
@@ -218,6 +221,10 @@ class AutoTrader:
             self._evolution = EvolutionEngine()
             self._trades_since_evolution = self._count_recent_trades()
             logger.info("진화 엔진 초기화 완료 (최근 거래 %d건)", self._trades_since_evolution)
+
+            # v4.6: 재시작 시 저장된 진화 상태를 실제로 적용
+            # (기존엔 상태만 로드하고 다음 진화 사이클까지 적용 안 됨)
+            self._apply_persisted_evolution()
         except Exception as e:
             logger.warning("진화 엔진 초기화 실패: %s", e)
             self._evolution = None
@@ -261,6 +268,48 @@ class AutoTrader:
         except Exception as e:
             logger.warning("포트폴리오 최적화 초기화 실패: %s", e)
             self._portfolio_optimizer = None
+
+    def _apply_persisted_evolution(self) -> None:
+        """저장된 진화 상태를 실제 시스템에 적용한다 (v4.6 신규).
+
+        이전엔 진화가 data/evolution_state.json에 저장만 되고,
+        재시작 시 WEIGHTS/BUY_THRESHOLD가 기본값으로 리셋되어
+        다음 진화 사이클(30분)까지 적용되지 않았다.
+
+        이 메서드가 재시작 직후 저장된 조정값을 즉시 복원한다.
+        """
+        if not self._evolution:
+            return
+
+        try:
+            # 1. 전략 조정값 (WEIGHTS, BUY_THRESHOLD 등)
+            adjustments = self._evolution.get_strategy_adjustments()
+            if adjustments and isinstance(self.strategy, ExpertStrategy):
+                self.strategy.apply_adjustments(adjustments)
+                logger.info("[재시작 복원] 저장된 전략 조정 적용: %s", list(adjustments.keys()))
+
+            # 2. 리스크 파라미터 (stop_loss, trailing, take_profit, cooldown)
+            risk = getattr(self._evolution.state, "risk_params", {}) or {}
+            applied = []
+            if "stop_loss_pct" in risk and hasattr(self.settings, "stop_loss_pct"):
+                safe_stop = max(-2.5, float(risk["stop_loss_pct"]))
+                self.settings.stop_loss_pct = safe_stop
+                applied.append(f"손절={safe_stop:.1f}%")
+            if "trailing_base" in risk:
+                safe_trail = max(0.3, min(2.0, float(risk["trailing_base"])))
+                self._trailing_base = safe_trail
+                applied.append(f"트레일링={safe_trail:.1f}%")
+            if "take_profit_pct" in risk and hasattr(self.settings, "take_profit_pct"):
+                safe_tp = max(1.0, min(5.0, float(risk["take_profit_pct"])))
+                self.settings.take_profit_pct = safe_tp
+                applied.append(f"익절={safe_tp:.1f}%")
+            if "cooldown_seconds" in risk:
+                self._COOLDOWN_SECONDS = int(risk["cooldown_seconds"])
+                applied.append(f"쿨다운={self._COOLDOWN_SECONDS}초")
+            if applied:
+                logger.info("[재시작 복원] 저장된 리스크 파라미터 적용: %s", " | ".join(applied))
+        except Exception as e:
+            logger.warning("진화 상태 복원 중 오류: %s", e)
 
     def _count_recent_trades(self) -> int:
         """마지막 진화 이후 누적 거래 수를 반환한다 (파라미터 진화용).
@@ -802,8 +851,8 @@ class AutoTrader:
         if isinstance(self.strategy, ExpertStrategy) and self._cycle_count % 3 == 0:
             self._reassess_positions()
 
-        # ── 1. 트레일링 스탑 (v4.0: 수익 보호 즉시 실행, 목표가 무관) ──
-        for code in self.order_manager.check_trailing_stop():
+        # ── 1. 트레일링 스탑 (v4.6: 진화된 _trailing_base 실제 전달) ──
+        for code in self.order_manager.check_trailing_stop(trail_pct=self._trailing_base):
             try:
                 pos = self.order_manager.positions.get(code)
                 if not pos or pos.profit_rate <= 0:
@@ -830,8 +879,10 @@ class AutoTrader:
                 except Exception as e:
                     logger.error("[%s] 목표가 매도 실패: %s", code, e)
 
-        # ── 3. 손절 매도 (v4.0: 빠른 손절 복원 — 손실 확대 방지) ──
-        for code in self.order_manager.check_stop_loss():
+        # ── 3. 손절 매도 (v4.6: 진화된 settings.stop_loss_pct 실제 반영) ──
+        for code in self.order_manager.check_stop_loss(
+            stop_loss_pct=getattr(self.settings, "stop_loss_pct", -2.5)
+        ):
             try:
                 pos = self.order_manager.positions.get(code)
                 if not pos:
@@ -846,8 +897,10 @@ class AutoTrader:
             except Exception as e:
                 logger.error("[%s] 손절 매도 실패: %s", code, e)
 
-        # ── 3.5 익절 매도 (v4.2: 누락 수정 — 수익 3%+ 확정 익절) ──
-        for code in self.order_manager.check_take_profit():
+        # ── 3.5 익절 매도 (v4.6: 진화된 settings.take_profit_pct 실제 반영) ──
+        for code in self.order_manager.check_take_profit(
+            take_profit_pct=getattr(self.settings, "take_profit_pct", 1.2)
+        ):
             try:
                 pos = self.order_manager.positions.get(code)
                 if not pos:

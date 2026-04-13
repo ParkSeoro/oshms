@@ -336,22 +336,30 @@ class OrderManager:
         del self.positions[stock_code]
         return True
 
-    def check_stop_loss(self) -> list[str]:
+    def check_stop_loss(self, stop_loss_pct: float | None = None) -> list[str]:
         """손절 조건을 확인하여 매도 대상 종목을 반환한다.
 
-        v4.4: 절대 손절선 -2.5% — 어떤 경우에도 이 이상 손실 방지.
-        ATR 동적 손절은 더 타이트하게만 적용 (최소 -1.5%, 절대상한 -2.5%).
+        v4.6: 진화된 settings.stop_loss_pct를 실제로 반영.
+        - stop_loss_pct가 주어지면 그 값을 사용 (절대상한 -2.5%)
+        - None이면 settings.stop_loss_pct를 참조, 그것도 없으면 -2.5%
+        - ATR 동적 손절은 더 타이트하게만 적용 (최소 -1.5%).
         """
         targets = []
-        HARD_STOP = -2.5  # v4.4: 절대 손절선 — 이 이상 손실 절대 불가
+        HARD_STOP_CAP = -2.5  # v4.6: 절대 상한 — 진화도 이보다 넓힐 수 없음
+
+        # v4.6: 진화/설정에서 주입된 손절 기준 적용
+        if stop_loss_pct is None:
+            stop_loss_pct = getattr(self.settings, "stop_loss_pct", HARD_STOP_CAP)
+        base_stop = max(HARD_STOP_CAP, stop_loss_pct)  # 안전 한계
+
         for code, pos in self.positions.items():
             # ATR 기반 동적 손절 (더 타이트하게)
             if pos.atr_at_buy > 0 and pos.avg_price > 0:
                 dynamic_stop_pct = -(pos.atr_at_buy * 2.0 / pos.avg_price * 100)
-                # v4.4: 최소 -1.5%, 최대 -2.5% (절대상한)
-                stop_pct = max(HARD_STOP, min(-1.5, dynamic_stop_pct))
+                # 최소 -1.5%, 최대 base_stop (절대상한 적용)
+                stop_pct = max(base_stop, min(-1.5, dynamic_stop_pct))
             else:
-                stop_pct = HARD_STOP
+                stop_pct = base_stop
 
             if pos.profit_rate <= stop_pct:
                 targets.append(code)
@@ -361,21 +369,28 @@ class OrderManager:
                 )
         return targets
 
-    def check_take_profit(self) -> list[str]:
+    def check_take_profit(self, take_profit_pct: float | None = None) -> list[str]:
         """익절 조건을 확인하여 매도 대상 종목을 반환한다.
 
-        v4.4: 확실한 수익 확정 — 1.2% 이상이면 즉시 익절.
-        손절 -2.5% 대비 익절 1.2% = 승률 60% 이상이면 수익.
+        v4.6: 진화된 settings.take_profit_pct를 실제로 반영.
+        - take_profit_pct가 주어지면 그 값을 사용 (안전 범위 1.0~5.0%)
+        - None이면 settings.take_profit_pct를 참조, 그것도 없으면 1.2%
         """
         targets = []
+
+        # v4.6: 진화/설정에서 주입된 익절 기준 적용
+        if take_profit_pct is None:
+            take_profit_pct = getattr(self.settings, "take_profit_pct", 1.2)
+        base_take = max(1.0, min(5.0, take_profit_pct))  # 안전 범위
+
         for code, pos in self.positions.items():
             # ATR 기반 동적 익절
             if pos.atr_at_buy > 0 and pos.avg_price > 0:
                 dynamic_take_pct = pos.atr_at_buy * 1.5 / pos.avg_price * 100
-                # v4.4: 최소 1.2%, 최대 3% (빠른 익절)
-                take_pct = max(1.2, min(3.0, dynamic_take_pct))
+                # 최소 base_take, 최대 5% (빠른 익절)
+                take_pct = max(base_take, min(5.0, dynamic_take_pct))
             else:
-                take_pct = 1.2  # v4.4: 1.5%→1.2% (더 빠른 수익 확정)
+                take_pct = base_take
 
             if pos.profit_rate >= take_pct:
                 targets.append(code)
