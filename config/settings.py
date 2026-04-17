@@ -30,6 +30,26 @@ class Settings:
     trading_start_time: str = "09:05"
     trading_end_time: str = "15:10"
 
+    # ── 계좌 보호 파라미터 (v4.8) ──────────────────────────────────────────────
+    # 일일 손실 한도: 이 비율 초과 손실 시 방어 모드 전환 (% 단위, 음수)
+    daily_loss_limit: float = -3.0
+    # 연속 손실 횟수 임계: 이 횟수 연속 손실 시 자동 매매 일시 정지
+    consecutive_loss_limit: int = 3
+    # 방어 모드에서 복구 기준: 손실의 이 비율 회복 시 정상 모드 복귀 (0~1)
+    recovery_threshold: float = 0.5
+
+    # ── 진입 필터 파라미터 (v4.8) ──────────────────────────────────────────────
+    # 체결강도 최소 기준: 매수호가/매도호가 비율 × 100 (기본 120 = 매수 우위)
+    min_contract_strength: float = 120.0
+    # VI 발동 후 진입 금지 시간 (분): 급격한 등락 직후 진입 방지
+    vi_guard_minutes: int = 5
+    # 당일 급등 추격 금지: 당일 변동률 이 값 초과 종목은 진입 안 함 (%)
+    max_chase_rate: float = 5.0
+    # 오후장 강제 청산 기준 시각 (HH:MM): 이 시간 이후 손실/보합 포지션 정리
+    afternoon_force_sell_time: str = "14:00"
+    # 오후장 강제 청산 최소 손실 기준 (%): 이 값 이상 손실이면 14시 이후 강제 청산
+    afternoon_force_sell_pct: float = -0.5
+
     # 로그
     log_level: str = "INFO"
 
@@ -69,6 +89,16 @@ class Settings:
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
             openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            # v4.8 계좌 보호
+            daily_loss_limit=float(os.getenv("DAILY_LOSS_LIMIT", "-3.0")),
+            consecutive_loss_limit=int(os.getenv("CONSECUTIVE_LOSS_LIMIT", "3")),
+            recovery_threshold=float(os.getenv("RECOVERY_THRESHOLD", "0.5")),
+            # v4.8 진입 필터
+            min_contract_strength=float(os.getenv("MIN_CONTRACT_STRENGTH", "120.0")),
+            vi_guard_minutes=int(os.getenv("VI_GUARD_MINUTES", "5")),
+            max_chase_rate=float(os.getenv("MAX_CHASE_RATE", "5.0")),
+            afternoon_force_sell_time=os.getenv("AFTERNOON_FORCE_SELL_TIME", "14:00"),
+            afternoon_force_sell_pct=float(os.getenv("AFTERNOON_FORCE_SELL_PCT", "-0.5")),
         )
 
     def reload_from_env(self, env_path: str | None = None) -> None:
@@ -90,6 +120,9 @@ class Settings:
             "stop_loss_pct", "take_profit_pct", "initial_capital",
             "trading_start_time", "trading_end_time", "log_level",
             "openai_api_key", "openai_model", "base_url",
+            "daily_loss_limit", "consecutive_loss_limit", "recovery_threshold",
+            "min_contract_strength", "vi_guard_minutes", "max_chase_rate",
+            "afternoon_force_sell_time", "afternoon_force_sell_pct",
         ):
             setattr(self, field_name, getattr(fresh, field_name))
 

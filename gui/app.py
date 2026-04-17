@@ -1169,7 +1169,7 @@ class OshmsApp:
                 messages.append({"role": role, "content": content})
 
             resp = client.messages.create(
-                model="claude-sonnet-4-5-20250929",
+                model="claude-opus-4-7",
                 max_tokens=1000,
                 system=context,
                 messages=messages,

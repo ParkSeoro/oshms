@@ -57,6 +57,21 @@ class AutoTrader:
         # {stock_code: "YYYY-MM-DD"} — 날짜가 바뀌면 해제
         self._loss_stocks_today: dict[str, str] = {}
 
+        # ── v4.8: 계좌 보호 시스템 ─────────────────────────────────────────
+        # 당일 실현 손익 (원) — 매도 완료 시마다 누적
+        self._daily_realized_pnl: float = 0.0
+        self._daily_pnl_date: str = ""          # 날짜 바뀌면 초기화
+        # 연속 손실 횟수 — 수익 매도 시 0으로 리셋
+        self._consecutive_losses: int = 0
+        # 방어 모드: 일일 손실 한도 도달 시 True (조건 강화, 포지션 축소)
+        self._defense_mode: bool = False
+        # 자동 정지: 연속 손실 한도 도달 시 True (매수 전면 중단)
+        self._auto_stopped: bool = False
+        # 자동 정지 진입 시점의 일일 손익 — 복구 판단 기준
+        self._stop_entry_pnl: float = 0.0
+        # VI 발동 추적: {stock_code: 마지막_변동률_스냅샷} — 급등 감지용
+        self._prev_change_rate: dict[str, float] = {}
+
         # 진화 엔진 (Level 0: 파라미터 진화)
         self._evolution = None
         self._trades_since_evolution = 0
@@ -819,6 +834,12 @@ class AutoTrader:
             except Exception as e:
                 logger.debug("포트폴리오 최적화 갱신 실패: %s", e)
 
+        # v4.8: 계좌 보호 상태 체크 (방어 모드 / 자동 정지 전환)
+        self._check_account_protection()
+
+        # v4.8: 오후 강제 청산 체크 (14시 이후 손실 포지션 정리)
+        self._check_afternoon_force_sell()
+
         # 2. 리스크 관리 (최우선)
         self._check_risk_management()
 
@@ -855,6 +876,103 @@ class AutoTrader:
         for c in stale:
             del self._loss_stocks_today[c]
         return stock_code in self._loss_stocks_today
+
+    # ── v4.8 계좌 보호 메서드 ────────────────────────────────────────────────
+
+    def _update_daily_pnl(self, realized_profit: float) -> None:
+        """매도 완료 시 일일 손익 누적. 날짜 바뀌면 초기화."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._daily_pnl_date != today:
+            self._daily_pnl_date = today
+            self._daily_realized_pnl = 0.0
+            self._defense_mode = False
+            self._auto_stopped = False
+            self._consecutive_losses = 0
+            logger.info("📅 일일 계좌 보호 카운터 초기화 (새 거래일: %s)", today)
+        self._daily_realized_pnl += realized_profit
+
+    def _check_account_protection(self) -> None:
+        """매 사이클마다 호출. 일일 손실 한도·연속 손실 기준으로 상태 전환."""
+        capital = self.settings.initial_capital
+        if capital <= 0:
+            return
+        daily_pct = (self._daily_realized_pnl / capital) * 100
+
+        # 자동 정지 복구 체크 — 손실의 50% 회복 시 재개
+        if self._auto_stopped:
+            loss_at_stop = self._stop_entry_pnl  # 음수
+            recovered = self._daily_realized_pnl - loss_at_stop  # 얼마나 회복했나
+            needed = abs(loss_at_stop) * self.settings.recovery_threshold
+            if recovered >= needed:
+                self._auto_stopped = False
+                self._consecutive_losses = 0
+                logger.info(
+                    "✅ 자동 정지 해제: 손실의 %.0f%% 회복 (회복액=%+,.0f원)",
+                    self.settings.recovery_threshold * 100, recovered,
+                )
+
+        # 방어 모드 체크 — 일일 손실 한도
+        limit = self.settings.daily_loss_limit  # 음수 (e.g. -3.0)
+        was_defense = self._defense_mode
+        self._defense_mode = daily_pct <= limit
+        if self._defense_mode and not was_defense:
+            logger.warning(
+                "🛡 방어 모드 진입: 일일 손익=%.1f%% (한도 %.1f%%) "
+                "→ 포지션 크기 50%% 축소, 진입 조건 강화",
+                daily_pct, limit,
+            )
+
+    def _can_enter_new_position(self) -> bool:
+        """신규 매수 가능 여부. 자동 정지 또는 방어 모드 심화 시 차단."""
+        if self._auto_stopped:
+            return False
+        # 방어 모드에서도 손익비 1:2 기대값 충족 종목은 허용
+        # (실제 종목 필터는 _analyze_and_trade에서 수행)
+        return True
+
+    def _is_surge_chasing(self, stock_code: str, current_change_rate: float) -> bool:
+        """급등 추격 금지. 당일 변동률 초과 OR VI 발동 직후 True 반환."""
+        # 당일 급등 추격 금지
+        if current_change_rate > self.settings.max_chase_rate:
+            logger.debug(
+                "⛔ 급등 추격 금지: %s 당일+%.1f%% > 기준+%.1f%%",
+                stock_code, current_change_rate, self.settings.max_chase_rate,
+            )
+            return True
+
+        # VI 감지: 직전 체크 대비 변동률이 3% 이상 급변
+        prev = self._prev_change_rate.get(stock_code)
+        if prev is not None and abs(current_change_rate - prev) >= 3.0:
+            logger.debug(
+                "⛔ VI 감지 진입 금지: %s 변동률 %.1f%%→%.1f%% (급변 %.1f%%)",
+                stock_code, prev, current_change_rate,
+                abs(current_change_rate - prev),
+            )
+            return True
+        self._prev_change_rate[stock_code] = current_change_rate
+        return False
+
+    def _check_afternoon_force_sell(self) -> None:
+        """14시 이후 약세 포지션 강제 청산."""
+        now_str = datetime.now().strftime("%H:%M")
+        if now_str < self.settings.afternoon_force_sell_time:
+            return
+        threshold = self.settings.afternoon_force_sell_pct
+        for code, pos in list(self.order_manager.positions.items()):
+            if pos.profit_rate <= threshold:
+                try:
+                    pr = pos.profit_rate
+                    logger.info(
+                        "⏰ 오후 강제 청산: %s(%s) 수익률=%.2f%% (기준 %.1f%%, %s 이후)",
+                        pos.stock_name, code, pr,
+                        threshold, self.settings.afternoon_force_sell_time,
+                    )
+                    self.order_manager.execute_sell(
+                        code, f"오후강제청산({pr:.1f}%,{now_str})"
+                    )
+                    self._on_trade_completed(code, pr, "SELL")
+                except Exception as e:
+                    logger.error("[%s] 오후 강제 청산 실패: %s", code, e)
 
     def _collect_position_snapshots(self) -> dict[str, dict]:
         """보유 종목들의 현재 기술적 스냅샷을 수집한다 (v4.7).
@@ -1139,14 +1257,34 @@ class AutoTrader:
             self._cooldown_stocks[stock_code] = time.time() + cooldown_sec
 
         # 누적 통계 기록 (StateManager)
+        realized_profit = 0.0
         try:
             last_trade = self.order_manager.trade_history[-1] if self.order_manager.trade_history else None
             if last_trade and last_trade.side == "SELL":
-                profit = float(last_trade.profit_loss)
-                is_win = profit > 0
-                self._state_mgr.record_trade(profit, is_win)
+                realized_profit = float(last_trade.profit_loss)
+                is_win = realized_profit > 0
+                self._state_mgr.record_trade(realized_profit, is_win)
         except Exception as e:
             logger.warning("누적 통계 기록 실패: %s", e)
+
+        # v4.8: 일일 손익 누적 + 연속 손실 카운터
+        self._update_daily_pnl(realized_profit)
+        if profit_rate < 0:
+            self._consecutive_losses += 1
+            limit = self.settings.consecutive_loss_limit
+            if self._consecutive_losses >= limit and not self._auto_stopped:
+                self._auto_stopped = True
+                self._stop_entry_pnl = self._daily_realized_pnl
+                logger.warning(
+                    "🛑 자동 정지: 연속 %d회 손실 → 매수 중단. "
+                    "일일 손익=%.0f원. 손실 %.0f%% 회복 시 재개.",
+                    self._consecutive_losses, self._daily_realized_pnl,
+                    self.settings.recovery_threshold * 100,
+                )
+        else:
+            if self._consecutive_losses > 0:
+                logger.info("  연속 손실 초기화 (수익 매도, 이전 연속=%d)", self._consecutive_losses)
+            self._consecutive_losses = 0
 
         # 종목별 임계값 학습
         if stock_code and isinstance(self.strategy, ExpertStrategy):
@@ -1210,6 +1348,23 @@ class AutoTrader:
                     )
             except Exception as e:
                 logger.debug("앙상블 성과 업데이트 실패: %s", e)
+
+    def _get_contract_strength(self, stock_code: str) -> float:
+        """체결강도 계산: 매수호가잔량 / 매도호가잔량 × 100.
+
+        KIS 호가 API에서 총 매수호가잔량과 총 매도호가잔량을 구해 비율을 계산.
+        100 = 균형, 120+ = 매수 우위(진입 조건), 80- = 매도 우위.
+        API 호출 실패 시 0을 반환 (호출부에서 0이면 필터 무력화).
+        """
+        try:
+            ob = self.api.get_orderbook(stock_code)
+            bid = ob.get("total_bid_volume", 0)
+            ask = ob.get("total_ask_volume", 0)
+            if ask <= 0:
+                return 0.0
+            return (bid / ask) * 100
+        except Exception:
+            return 0.0
 
     def _scan_momentum_breakouts(self, stocks: list[str]) -> None:
         """v3.2: 거래량 급등 + 가격 돌파 종목을 자동 포착하여 매수한다.
@@ -1341,6 +1496,11 @@ class AutoTrader:
                 and self._is_blocked_today(stock_code)):
             return
 
+        # v4.8: 자동 정지 중이면 신규 매수 차단 (보유 종목 청산은 계속)
+        if (stock_code not in self.order_manager.positions
+                and not self._can_enter_new_position()):
+            return
+
         if stock_code in self._cooldown_stocks:
             if time.time() < self._cooldown_stocks[stock_code]:
                 return
@@ -1418,6 +1578,35 @@ class AutoTrader:
                 now_str = datetime.now().strftime("%H:%M")
                 if not mkt.crosses_midnight and now_str >= mkt.liquidate_time:
                     logger.info("⛔ 장마감 임박 — 신규 매수 차단 (%s, %s)", stock_code, now_str)
+                    return
+
+            # v4.8: 급등 추격 금지 + VI 감지 — 당일 변동률 기준 초과 시 차단
+            change_rate = current_price.get("change_rate", 0.0)
+            if self._is_surge_chasing(stock_code, change_rate):
+                return
+
+            # v4.8: 체결강도 확인 — orderbook bid/ask 비율로 매수 우위 확인
+            if self.market == "KR":
+                contract_strength = self._get_contract_strength(stock_code)
+                min_cs = self.settings.min_contract_strength
+                if contract_strength > 0 and contract_strength < min_cs:
+                    logger.debug(
+                        "⛔ 체결강도 부족: %s %.0f < %.0f (매수세 약함)",
+                        stock_code, contract_strength, min_cs,
+                    )
+                    return
+
+            # v4.8: 방어 모드에서 손익비 1:2 미달 종목은 매수 차단
+            if self._defense_mode:
+                target_price_tmp = getattr(signal, "target_price", 0) or 0
+                price_now = current_price["price"]
+                stop_distance = abs(self.settings.stop_loss_pct / 100 * price_now)
+                upside_distance = (target_price_tmp - price_now) if target_price_tmp > price_now else 0
+                if upside_distance < stop_distance * 2:
+                    logger.info(
+                        "🛡 방어 모드: %s 손익비 부족 (상승여력=%.0f원 < 필요=%.0f원) → 스킵",
+                        stock_code, upside_distance, stop_distance * 2,
+                    )
                     return
 
             # v4.3: 연속 손실 보호 — 최근 매도 3건 모두 손실이면 매수 일시 중단

@@ -211,7 +211,7 @@ class AIAnalyst:
                 "Content-Type": "application/json",
             },
             json={
-                "model": "claude-sonnet-4-5-20250929",
+                "model": "claude-opus-4-7",
                 "max_tokens": 1000,
                 "system": self.SYSTEM_PROMPT,
                 "messages": [
