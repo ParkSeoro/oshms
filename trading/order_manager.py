@@ -260,6 +260,13 @@ class OrderManager:
             logger.warning("[%s] 이미 보유 중인 종목", stock_code)
             return False
 
+        # v4.8: 종목명이 비어있거나 코드와 동일하면 API에서 보충
+        if not stock_name or stock_name == stock_code:
+            try:
+                stock_name = self.api.get_stock_name(stock_code)
+            except Exception:
+                stock_name = stock_code
+
         quantity = self.calc_buy_quantity(price, strength, per=per, pbr=pbr, size_mult=size_mult)
         if quantity <= 0:
             logger.warning("[%s] 매수 수량 0: 가격=%d, 최대금액=%d", stock_code, price, self.settings.max_buy_amount)
@@ -335,10 +342,18 @@ class OrderManager:
         profit_loss = pos.profit_loss
         profit_rate = pos.profit_rate
 
+        # v4.8: 종목명 빈 문자열 방지
+        sell_name = pos.stock_name
+        if not sell_name or sell_name == stock_code:
+            try:
+                sell_name = self.api.get_stock_name(stock_code)
+            except Exception:
+                sell_name = stock_code
+
         # 거래 기록
         record = TradeRecord(
             stock_code=stock_code,
-            stock_name=pos.stock_name,
+            stock_name=sell_name,
             side="SELL",
             quantity=pos.quantity,
             price=pos.current_price,

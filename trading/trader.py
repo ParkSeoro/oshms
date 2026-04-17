@@ -162,7 +162,7 @@ class AutoTrader:
         self._init_evolution()
 
         logger.info("=" * 70)
-        logger.info("  OSHMS 자동 매매 시스템 v4.7 가동")
+        logger.info("  OSHMS 자동 매매 시스템 v4.8 가동")
         logger.info("  (논지 기반 매매 + 당일 재매수 금지 — whipsaw 방지)")
         logger.info("=" * 70)
         mode_str = "모의투자" if self.settings.is_mock else "실전투자"

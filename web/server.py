@@ -707,7 +707,11 @@ def api_trades():
         data = json.loads(trades_file.read_text(encoding="utf-8"))
 
         # 종목명 보충 — 비어있거나 코드와 동일하면 API에서 조회
+        # v4.8: 실행 중인 트레이더의 API(종목명 캐시가 따뜻한)를 우선 사용
         api = None
+        trader = _state.get("trader")
+        if trader and hasattr(trader, "api"):
+            api = trader.api
         for t in data:
             code = t.get("stock_code", "")
             name = t.get("stock_name", "")
@@ -715,12 +719,11 @@ def api_trades():
                 try:
                     if api is None:
                         api = _get_api()
-                    # v4.4: 캐시만이 아닌 get_stock_name() 호출 (API 조회 포함)
-                    resolved = api.get_stock_name(code) if hasattr(api, 'get_stock_name') else api._stock_name_cache.get(code, "")
+                    resolved = api.get_stock_name(code) if hasattr(api, 'get_stock_name') else ""
                     if resolved and resolved != code:
                         t["stock_name"] = resolved
                 except Exception:
-                    continue  # v4.4: break→continue (한 종목 실패해도 나머지 계속)
+                    continue
 
         # 최신순 정렬 + 페이징
         data.reverse()
