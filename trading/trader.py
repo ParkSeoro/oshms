@@ -7,6 +7,10 @@ v2.7: 분석 기반 목표가 매도 — 상승여력 소진까지 홀딩
 v2.9: 레짐 적응형 전략 전환, 멀티 타임프레임 확인, 패턴 메모리, 리스크 자동 진화
 v3.0: 코드 자체 진화 엔진 연동 — 프로그램이 스스로 약점을 파악하고 개선
 v3.2: 전략 앙상블, Q-Learning, 포트폴리오 최적화, 자동 매매 복기
+v4.7: 논지 기반 매매 + 당일 재매수 금지 — whipsaw 방지
+v4.8: 계좌 보호 시스템 + 체결강도 필터 + VI 감지
+v4.9: 세션 기반 단일 진입 게이트 + 통합 확신도(Conviction 0~100) +
+     일일 거래 예산으로 수익률 들쭉날쭉 문제 해결
 """
 
 import json
@@ -17,8 +21,15 @@ from pathlib import Path
 from api.kis_api import KISApi
 from config.settings import Settings
 from strategy.base import BaseStrategy, Signal, SignalType
+from strategy.conviction import (
+    ConvictionScore,
+    MIN_CONVICTION_TO_ENTER,
+    calc_conviction,
+    session_fit_score,
+)
 from strategy.expert import ExpertStrategy
 from strategy.market_context import MarketContextAnalyzer, MarketContext
+from strategy.session import TradingSession, get_profile, get_session
 from trading.order_manager import OrderManager
 from trading.state_manager import StateManager
 from utils.logger import setup_logger
@@ -71,6 +82,14 @@ class AutoTrader:
         self._stop_entry_pnl: float = 0.0
         # VI 발동 추적: {stock_code: 마지막_변동률_스냅샷} — 급등 감지용
         self._prev_change_rate: dict[str, float] = {}
+
+        # ── v4.9: 확신도 기반 단일 진입 게이트 + 일일 거래 예산 ───────────────
+        # 일일 신규 진입 카운터 (오버트레이드 방지)
+        self._daily_entry_date: str = ""
+        self._daily_entries_total: int = 0                 # 오늘 전체 진입
+        self._session_entries: dict[str, int] = {}         # session_name → count
+        # 글로벌 일일 상한 (세션 프로필과 함께 이중 안전장치)
+        self._daily_trade_budget: int = 6
 
         # 진화 엔진 (Level 0: 파라미터 진화)
         self._evolution = None
@@ -162,8 +181,8 @@ class AutoTrader:
         self._init_evolution()
 
         logger.info("=" * 70)
-        logger.info("  OSHMS 자동 매매 시스템 v4.8 가동")
-        logger.info("  (논지 기반 매매 + 당일 재매수 금지 — whipsaw 방지)")
+        logger.info("  OSHMS 자동 매매 시스템 v4.9 가동")
+        logger.info("  (세션 기반 + 통합 확신도 + 일일 거래 예산 — 수익률 안정화)")
         logger.info("=" * 70)
         mode_str = "모의투자" if self.settings.is_mock else "실전투자"
         logger.info("모드: %s | API: %s", mode_str, self.settings.base_url[:35])
@@ -952,6 +971,231 @@ class AutoTrader:
         self._prev_change_rate[stock_code] = current_change_rate
         return False
 
+    # ── v4.9 세션 + 확신도 기반 단일 진입 게이트 ─────────────────────────────
+
+    def _reset_daily_entries_if_new_day(self) -> None:
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._daily_entry_date != today:
+            self._daily_entry_date = today
+            self._daily_entries_total = 0
+            self._session_entries = {}
+
+    def _session_has_budget(self, session_name: str, session_max: int) -> bool:
+        """세션 내 신규 진입 여유가 있는지 확인."""
+        self._reset_daily_entries_if_new_day()
+        used = self._session_entries.get(session_name, 0)
+        if used >= session_max:
+            return False
+        if self._daily_entries_total >= self._daily_trade_budget:
+            return False
+        return True
+
+    def _record_entry(self, session_name: str) -> None:
+        self._reset_daily_entries_if_new_day()
+        self._daily_entries_total += 1
+        self._session_entries[session_name] = self._session_entries.get(session_name, 0) + 1
+
+    def _try_enter_position(
+        self,
+        stock_code: str,
+        stock_name: str,
+        price_data: dict,
+        reason: str,
+        analysis=None,
+        atr_value: float = 0.0,
+        target_price: int = 0,
+        estimated_upside: float = 0.0,
+        volume_ratio_override: float = 0.0,
+    ) -> bool:
+        """v4.9: 모든 진입 경로가 통과해야 하는 단일 게이트.
+
+        `_analyze_and_trade`와 `_scan_momentum_breakouts` 둘 다 여기를 통해
+        동일한 필터·확신도 계산·크기 결정을 받는다.
+
+        Returns: 매수 실행되었으면 True.
+        """
+        price = price_data.get("price", 0) or 0
+        if price <= 0:
+            return False
+
+        # 공통 필터 (1): 보유 중이면 skip
+        if stock_code in self.order_manager.positions:
+            return False
+        if not self.order_manager.can_buy():
+            return False
+
+        # 공통 필터 (2): 당일 손실 차단 / 쿨다운
+        if self._is_blocked_today(stock_code):
+            return False
+        if stock_code in self._cooldown_stocks:
+            if time.time() < self._cooldown_stocks[stock_code]:
+                return False
+
+        # 공통 필터 (3): 계좌 보호 — 자동 정지 중이면 차단
+        if not self._can_enter_new_position():
+            return False
+
+        # 세션 필터 (4): 세션 프로필 로드
+        profile = get_profile()
+        session_name = profile.session.value
+        if not profile.allow_new_entry:
+            logger.debug("⛔ 세션 차단: %s — %s", stock_code, profile.reason)
+            return False
+
+        # 세션 필터 (5): 세션/일일 진입 예산
+        if not self._session_has_budget(session_name, profile.max_new_entries):
+            used = self._session_entries.get(session_name, 0)
+            logger.debug(
+                "⛔ 진입 예산 소진: %s 세션=%s (%d/%d) 일일=%d/%d",
+                stock_code, session_name, used, profile.max_new_entries,
+                self._daily_entries_total, self._daily_trade_budget,
+            )
+            return False
+
+        # 가격 필터 (6): 1주도 못 사는 종목은 skip
+        if price > self.settings.max_buy_amount:
+            return False
+
+        # 급등 추격 / VI 필터 (7)
+        change_rate = price_data.get("change_rate", 0.0)
+        if self._is_surge_chasing(stock_code, change_rate):
+            return False
+
+        # 장마감 15분 전 차단 (8)
+        from trading.market_scheduler import MARKETS
+        mkt = MARKETS.get(self.market)
+        if mkt:
+            now_str = datetime.now().strftime("%H:%M")
+            if not mkt.crosses_midnight and now_str >= mkt.liquidate_time:
+                return False
+
+        # 연속 손실 보호 (9)
+        recent_sells = [t for t in self.order_manager.trade_history[-5:]
+                        if t.side == "SELL"]
+        if len(recent_sells) >= 3:
+            recent_losses = [t for t in recent_sells[-3:] if t.profit_loss <= 0]
+            if len(recent_losses) >= 3:
+                logger.info("⛔ 연속 손실 보호: 매수 보류 (%s)", stock_code)
+                return False
+
+        # 체결강도 필터 (10, KR만)
+        contract_strength = 0.0
+        if self.market == "KR":
+            contract_strength = self._get_contract_strength(stock_code)
+            min_cs = self.settings.min_contract_strength
+            if contract_strength > 0 and contract_strength < min_cs:
+                logger.debug(
+                    "⛔ 체결강도 부족: %s %.0f < %.0f",
+                    stock_code, contract_strength, min_cs,
+                )
+                return False
+
+        # ── 확신도 계산 ──────────────────────────────────────────────────────
+        expert_total = 0.0
+        expert_conf = 0.0
+        trend_score = 0.0
+        volume_ratio = volume_ratio_override or 1.0
+        macd_cross = ""
+        thesis: dict = {}
+
+        if analysis is not None:
+            expert_total = float(getattr(analysis, "total_score", 0.0))
+            expert_conf = float(getattr(analysis, "confidence", 0.0))
+            if analysis.technical:
+                t = analysis.technical
+                trend_score = float(getattr(t, "trend_score", 0.0))
+                if not volume_ratio_override:
+                    volume_ratio = float(getattr(t, "volume_ratio", 1.0))
+                macd_cross = str(getattr(t, "macd_cross", "") or "")
+                thesis = {
+                    "rsi": getattr(t, "rsi", 50.0),
+                    "trend_score": trend_score,
+                    "momentum_score": getattr(t, "momentum_score", 0.0),
+                    "volume_ratio": volume_ratio,
+                    "macd_cross": macd_cross,
+                    "regime": self._market_ctx.regime if self._market_ctx else "",
+                }
+
+        # 브레이크아웃 경로(analysis=None)일 때도 돌파 강도만으로 확신도 계산
+        if analysis is None and volume_ratio_override:
+            # volume_ratio_override 자체가 돌파 강도. 추세는 보수적으로 양수 가정.
+            trend_score = min(0.5, max(0.0, (volume_ratio_override - 2.0) * 0.15))
+            expert_total = min(0.45, max(0.0, (volume_ratio_override - 2.0) * 0.1))
+            expert_conf = 0.5
+
+        session_fit = session_fit_score(session_name, volume_ratio, trend_score)
+        conviction = calc_conviction(
+            expert_total_score=expert_total,
+            expert_confidence=expert_conf,
+            trend_score=trend_score,
+            volume_ratio=volume_ratio,
+            contract_strength=contract_strength,
+            session_fit=session_fit,
+            macd_cross=macd_cross,
+        )
+
+        # 세션별 최소 확신도 + 글로벌 최소치 모두 충족해야 진입
+        if not conviction.should_enter(profile.min_conviction):
+            logger.info(
+                "⛔ 확신도 부족: %s(%s) %s vs 세션최소=%.0f",
+                stock_name, stock_code, conviction.describe(), profile.min_conviction,
+            )
+            return False
+
+        # 방어 모드에서는 최소 확신도 +10 가산 (더 엄격하게)
+        if self._defense_mode and conviction.total < (profile.min_conviction + 10):
+            logger.info(
+                "🛡 방어 모드 추가 필터: %s %s < %.0f",
+                stock_code, conviction.describe(), profile.min_conviction + 10,
+            )
+            return False
+
+        # 방어 모드 손익비 1:2 체크 (기존 v4.8 로직 유지)
+        if self._defense_mode:
+            stop_distance = abs(self.settings.stop_loss_pct / 100 * price)
+            upside_distance = (target_price - price) if target_price > price else 0
+            if upside_distance < stop_distance * 2:
+                logger.info(
+                    "🛡 방어 모드: %s 손익비 부족 (상승=%.0f < 필요=%.0f) → 스킵",
+                    stock_code, upside_distance, stop_distance * 2,
+                )
+                return False
+
+        # ── 실행 ────────────────────────────────────────────────────────────
+        conviction_size_mult = conviction.size_mult()
+        session_size_mult = profile.size_mult
+        final_size_mult = conviction_size_mult * session_size_mult
+        if self._defense_mode:
+            final_size_mult *= 0.5  # 방어 모드는 추가로 반토막
+
+        logger.info(
+            "▶ 매수 실행 [v4.9]: %s(%s) %s원 | %s | 세션=%s 크기=%.2fx | %s",
+            stock_name, stock_code, f"{price:,}",
+            conviction.describe(), session_name, final_size_mult, reason,
+        )
+        if thesis:
+            logger.info(
+                "  매수근거: RSI=%.0f 추세=%.2f 모멘텀=%.2f 거래량=%.1fx MACD=%s",
+                thesis.get("rsi", 50), thesis.get("trend_score", 0),
+                thesis.get("momentum_score", 0), thesis.get("volume_ratio", 1.0),
+                thesis.get("macd_cross") or "-",
+            )
+
+        ok = self.order_manager.execute_buy(
+            stock_code, stock_name, price, reason,
+            strength=conviction.total / 100.0,  # 0~1 정규화
+            atr=atr_value,
+            target_price=target_price,
+            estimated_upside=estimated_upside,
+            per=price_data.get("per", 0),
+            pbr=price_data.get("pbr", 0),
+            size_mult=final_size_mult,
+            thesis=thesis,
+        )
+        if ok:
+            self._record_entry(session_name)
+        return ok
+
     def _check_afternoon_force_sell(self) -> None:
         """14시 이후 약세 포지션 강제 청산."""
         now_str = datetime.now().strftime("%H:%M")
@@ -1441,37 +1685,27 @@ class AutoTrader:
                         f"{prev_high:,}", f"{recent_close:,}",
                     )
 
-                    # ATR + 논지 스냅샷 (v4.7)
+                    # v4.9: 브레이크아웃도 동일한 진입 게이트를 통과해야 함.
+                    # 돌파 강도(volume_ratio)가 확신도 계산 안에서 반영된다.
                     atr_value = 0.0
-                    thesis = {}
+                    analysis_for_gate = None
                     if isinstance(self.strategy, ExpertStrategy):
                         try:
-                            analysis = self.strategy.full_analysis(
+                            analysis_for_gate = self.strategy.full_analysis(
                                 stock_code, stock_name, candles, current)
-                            if analysis.technical:
-                                t = analysis.technical
-                                atr_value = t.atr
-                                thesis = {
-                                    "rsi": getattr(t, "rsi", 50.0),
-                                    "trend_score": getattr(t, "trend_score", 0.0),
-                                    "momentum_score": getattr(t, "momentum_score", 0.0),
-                                    "volume_ratio": volume_ratio,
-                                    "macd_cross": getattr(t, "macd_cross", ""),
-                                    "regime": self._market_ctx.regime if self._market_ctx else "",
-                                }
+                            if analysis_for_gate.technical:
+                                atr_value = analysis_for_gate.technical.atr
                         except Exception:
-                            pass
+                            analysis_for_gate = None
 
-                    # 돌파 강도 = 거래량 비율 기반 (0.3~0.8)
-                    strength = min(0.8, 0.3 + (volume_ratio - 3.0) * 0.05)
-
-                    self.order_manager.execute_buy(
-                        stock_code, stock_name, current["price"],
-                        f"모멘텀돌파(거래량{volume_ratio:.1f}x,고가돌파)",
-                        strength=strength, atr=atr_value,
-                        per=current.get("per", 0),
-                        pbr=current.get("pbr", 0),
-                        thesis=thesis,
+                    self._try_enter_position(
+                        stock_code=stock_code,
+                        stock_name=stock_name,
+                        price_data=current,
+                        reason=f"모멘텀돌파(거래량{volume_ratio:.1f}x,고가돌파)",
+                        analysis=analysis_for_gate,
+                        atr_value=atr_value,
+                        volume_ratio_override=volume_ratio,
                     )
 
                     if not self.order_manager.can_buy():
@@ -1564,100 +1798,23 @@ class AutoTrader:
 
         # ── 3단계: 즉시 실행 ──
 
-        # 매수: 전략이 BUY 결정 + 보유 가능 → 바로 실행
+        # 매수: v4.9 — 모든 필터/확신도 계산은 _try_enter_position 이 담당
         if signal.signal_type == SignalType.BUY:
-            if stock_code in self.order_manager.positions:
-                return
-            if not self.order_manager.can_buy():
-                return
-
-            # v4.5: 장마감 15분 전 신규 매수 금지 (익일 보유 방지)
-            from trading.market_scheduler import MARKETS
-            mkt = MARKETS.get(self.market)
-            if mkt:
-                now_str = datetime.now().strftime("%H:%M")
-                if not mkt.crosses_midnight and now_str >= mkt.liquidate_time:
-                    logger.info("⛔ 장마감 임박 — 신규 매수 차단 (%s, %s)", stock_code, now_str)
-                    return
-
-            # v4.8: 급등 추격 금지 + VI 감지 — 당일 변동률 기준 초과 시 차단
-            change_rate = current_price.get("change_rate", 0.0)
-            if self._is_surge_chasing(stock_code, change_rate):
-                return
-
-            # v4.8: 체결강도 확인 — orderbook bid/ask 비율로 매수 우위 확인
-            if self.market == "KR":
-                contract_strength = self._get_contract_strength(stock_code)
-                min_cs = self.settings.min_contract_strength
-                if contract_strength > 0 and contract_strength < min_cs:
-                    logger.debug(
-                        "⛔ 체결강도 부족: %s %.0f < %.0f (매수세 약함)",
-                        stock_code, contract_strength, min_cs,
-                    )
-                    return
-
-            # v4.8: 방어 모드에서 손익비 1:2 미달 종목은 매수 차단
-            if self._defense_mode:
-                target_price_tmp = getattr(signal, "target_price", 0) or 0
-                price_now = current_price["price"]
-                stop_distance = abs(self.settings.stop_loss_pct / 100 * price_now)
-                upside_distance = (target_price_tmp - price_now) if target_price_tmp > price_now else 0
-                if upside_distance < stop_distance * 2:
-                    logger.info(
-                        "🛡 방어 모드: %s 손익비 부족 (상승여력=%.0f원 < 필요=%.0f원) → 스킵",
-                        stock_code, upside_distance, stop_distance * 2,
-                    )
-                    return
-
-            # v4.3: 연속 손실 보호 — 최근 매도 3건 모두 손실이면 매수 일시 중단
-            recent_sells = [t for t in self.order_manager.trade_history[-5:]
-                           if t.side == "SELL"]
-            if len(recent_sells) >= 3:
-                recent_losses = [t for t in recent_sells[-3:] if t.profit_loss <= 0]
-                if len(recent_losses) >= 3:
-                    logger.info(
-                        "⛔ 연속 손실 보호: 최근 3건 연속 손실 — 매수 보류 (%s)",
-                        stock_code,
-                    )
-                    return
-
             target_price = getattr(signal, "target_price", 0) or 0
             estimated_upside = 0.0
             if target_price > 0 and current_price["price"] > 0:
                 estimated_upside = (target_price - current_price["price"]) / current_price["price"] * 100
 
-            # v4.7: 매수 논지 스냅샷 — "왜 샀는지"의 근거를 저장
-            thesis = {}
-            if isinstance(self.strategy, ExpertStrategy) and analysis.technical:
-                t = analysis.technical
-                thesis = {
-                    "rsi": getattr(t, "rsi", 50.0),
-                    "trend_score": getattr(t, "trend_score", 0.0),
-                    "momentum_score": getattr(t, "momentum_score", 0.0),
-                    "volume_ratio": getattr(t, "volume_ratio", 1.0),
-                    "macd_cross": getattr(t, "macd_cross", ""),
-                    "regime": self._market_ctx.regime if self._market_ctx else "",
-                }
-
-            logger.info(
-                "▶ 매수 실행: %s(%s) %s원 | 강도=%.2f | %s",
-                stock_name, stock_code, f"{current_price['price']:,}",
-                signal.strength, signal.reason,
-            )
-            if thesis:
-                logger.info(
-                    "  매수근거 스냅샷: RSI=%.0f 추세=%.2f 모멘텀=%.2f 거래량=%.1fx MACD=%s",
-                    thesis["rsi"], thesis["trend_score"], thesis["momentum_score"],
-                    thesis["volume_ratio"], thesis["macd_cross"] or "-",
-                )
-
-            self.order_manager.execute_buy(
-                stock_code, stock_name, current_price["price"], signal.reason,
-                strength=signal.strength, atr=atr_value,
-                target_price=target_price, estimated_upside=estimated_upside,
-                per=current_price.get("per", 0),
-                pbr=current_price.get("pbr", 0),
-                thesis=thesis,
+            analysis_for_gate = analysis if isinstance(self.strategy, ExpertStrategy) else None
+            self._try_enter_position(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                price_data=current_price,
+                reason=signal.reason,
+                analysis=analysis_for_gate,
+                atr_value=atr_value,
+                target_price=target_price,
+                estimated_upside=estimated_upside,
             )
 
         # 매도: 전략이 SELL 결정 + 보유 중 + 매도 적합 → 바로 실행

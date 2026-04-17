@@ -206,35 +206,30 @@ class OrderManager:
     def calc_buy_quantity(self, price: int, strength: float = 1.0,
                           per: float = 0, pbr: float = 0,
                           size_mult: float = 1.0) -> int:
-        """매수 수량을 계산한다 (v4.0: 균등 분산 투자).
+        """매수 수량을 계산한다 (v4.9: 확신도 기반 사이징).
 
-        소액 빈번 거래 전략: 종목당 균등 금액으로 분산 투자.
-        - 최대 보유 종목 수로 균등 분배
-        - 신호 강도에 따라 소폭 조정 (±20%)
+        v4.9 설계:
+        - size_mult가 1.0보다 작으면 "확신도가 낮아 의도적으로 줄인 것"
+          → 하한(min_invest) 무시하고 그대로 반영 (변동성 주범이었음)
+        - size_mult >= 1.0 이면 기존 로직 유지 (강한 신호에 집중)
 
         Args:
-            size_mult: 포트폴리오 최적화 승수 (0.5~1.3, 기본 1.0)
+            strength: 통합 확신도 0~1 (v4.9: ConvictionScore.total/100)
+            size_mult: 확신도 + 세션 + 방어 모드가 합쳐진 최종 배수 (0.25~1.3)
         """
         if price <= 0:
             return 0
 
-        # v4.0: 균등 분배 기반 (집중 투자 → 분산 투자)
-        # max_buy_amount를 기준으로, 신호 강도에 따라 ±20% 조정
-        strength_adj = 0.8 + strength * 0.4  # 0.8 ~ 1.2
-        invest_ratio = min(1.0, strength_adj)
-
-        # 포트폴리오 최적화 승수 적용
-        invest_ratio *= max(0.5, min(1.3, size_mult))
-
-        effective_amount = int(self.settings.max_buy_amount * min(1.0, invest_ratio))
+        # v4.9: size_mult를 직접 곱하는 구조로 단순화
+        # 강도 변조(±20%)는 이미 conviction 안에 반영되어 있으므로 중복 제거
+        effective_mult = max(0.25, min(1.3, size_mult))
+        effective_amount = int(self.settings.max_buy_amount * effective_mult)
         quantity = effective_amount // price
 
-        # 최소 수량 보장: 0.3% 수익이면 최소 500원 이상 → 최소 약 170,000원 투자
-        min_invest = 100_000
-        if quantity * price < min_invest and price > 0:
-            min_qty = min_invest // price
-            if min_qty > 0 and min_qty * price <= self.settings.max_buy_amount:
-                quantity = min_qty
+        # 하한 보정은 size_mult가 충분히 크고(>=1.0) 가격이 비싸 1주도 못 살 때만
+        # (의도적 다운사이징을 깨뜨리지 않도록)
+        if quantity == 0 and effective_mult >= 1.0 and price <= self.settings.max_buy_amount:
+            quantity = 1
 
         return quantity
 

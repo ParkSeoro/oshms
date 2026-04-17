@@ -58,20 +58,40 @@ class TestOrderManager(unittest.TestCase):
             )
         self.assertFalse(self.manager.can_buy())
 
-    def test_calc_buy_quantity(self):
-        # strength=1.0 → ratio=min(1.0, max(0.55, 0.3+0.65))=0.95
-        # effective=500000*0.95=475000, 475000//50000=9
+    def test_calc_buy_quantity_default(self):
+        # v4.9: strength 무시, size_mult=1.0 기본 → max_buy_amount//price
         qty = self.manager.calc_buy_quantity(50000)
-        self.assertEqual(qty, 9)
+        self.assertEqual(qty, 10)  # 500,000 / 50,000
 
-    def test_calc_buy_quantity_max_strength(self):
-        # 저PER+저PBR 보너스 → ratio=0.95+0.05=1.0 → 500000//50000=10
-        qty = self.manager.calc_buy_quantity(50000, strength=1.0, per=8, pbr=1.2)
-        self.assertEqual(qty, 10)
+    def test_calc_buy_quantity_half_size(self):
+        """v4.9: size_mult=0.5 (HALF tier)는 반 포지션만."""
+        qty = self.manager.calc_buy_quantity(50000, size_mult=0.5)
+        self.assertEqual(qty, 5)  # 250,000 / 50,000
+
+    def test_calc_buy_quantity_max_size(self):
+        """v4.9: size_mult=1.2 (MAX tier)는 확장 포지션."""
+        qty = self.manager.calc_buy_quantity(50000, size_mult=1.2)
+        self.assertEqual(qty, 12)  # 600,000 / 50,000
+
+    def test_calc_buy_quantity_honors_small_size(self):
+        """v4.9 핵심: 낮은 확신도는 작은 포지션으로 반영돼야 한다.
+
+        이전 버전엔 min_invest 하한 때문에 size_mult=0.35여도 강제로 끌어올려
+        실제로는 수익률 변동성의 주범이었다.
+        """
+        qty = self.manager.calc_buy_quantity(50000, size_mult=0.35)
+        # 500,000 * 0.35 = 175,000 → 175,000 // 50,000 = 3
+        self.assertEqual(qty, 3)
 
     def test_calc_buy_quantity_zero_price(self):
         qty = self.manager.calc_buy_quantity(0)
         self.assertEqual(qty, 0)
+
+    def test_calc_buy_quantity_min_fallback_high_price(self):
+        """가격이 max_buy_amount에 육박해도 size_mult=1.0이면 최소 1주."""
+        # 400,000원 짜리 주식, 50만원 예산, size_mult=1.0 → 1주
+        qty = self.manager.calc_buy_quantity(400000, size_mult=1.0)
+        self.assertEqual(qty, 1)
 
     def test_check_stop_loss(self):
         self.manager.positions["005930"] = Position(
