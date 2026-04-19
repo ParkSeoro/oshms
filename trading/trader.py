@@ -477,6 +477,13 @@ class AutoTrader:
                 if applied:
                     logger.info("리스크 진화 적용 (안전 한계 내): %s", " | ".join(applied))
 
+            # v4.9: StateManager에 진화 세대 동기화 (이전엔 누락되어 0 고정)
+            try:
+                self._state_mgr.state.evolution_generation = result["generation"]
+                self._state_mgr._save_state()
+            except Exception:
+                pass
+
             logger.info(
                 "진화 세대 #%d 완료: 적합도=%.1f (규칙 +%d -%d)",
                 result["generation"], result["fitness"],
@@ -859,6 +866,11 @@ class AutoTrader:
         # v4.8: 오후 강제 청산 체크 (14시 이후 손실 포지션 정리)
         self._check_afternoon_force_sell()
 
+        # v4.9: 마감전 세션이면 약세 포지션 적극 정리
+        session_profile = get_profile()
+        if session_profile.force_defensive_sell and self.order_manager.positions:
+            self._force_defensive_sell(session_profile)
+
         # 2. 리스크 관리 (최우선)
         self._check_risk_management()
 
@@ -1118,10 +1130,23 @@ class AutoTrader:
 
         # 브레이크아웃 경로(analysis=None)일 때도 돌파 강도만으로 확신도 계산
         if analysis is None and volume_ratio_override:
-            # volume_ratio_override 자체가 돌파 강도. 추세는 보수적으로 양수 가정.
             trend_score = min(0.5, max(0.0, (volume_ratio_override - 2.0) * 0.15))
             expert_total = min(0.45, max(0.0, (volume_ratio_override - 2.0) * 0.1))
             expert_conf = 0.5
+
+        # v4.9: Q-Learning 보정 — 과거 유사 상태에서의 수익률 학습 반영
+        # 매수 유리 상태면 expert_total 보강, 매도 유리 상태면 억제
+        if self._q_agent and thesis:
+            try:
+                q_mod = self._q_agent.get_confidence_modifier(thesis)
+                if q_mod != 0:
+                    expert_total += q_mod
+                    logger.debug(
+                        "Q-Learning 보정: %s → expert_total %+.3f (누적=%.3f)",
+                        stock_code, q_mod, expert_total,
+                    )
+            except Exception:
+                pass
 
         session_fit = session_fit_score(session_name, volume_ratio, trend_score)
         conviction = calc_conviction(
@@ -1194,7 +1219,35 @@ class AutoTrader:
         )
         if ok:
             self._record_entry(session_name)
+            # v4.9: Q-Learning 매수 기록 — 매도 시 학습에 필수
+            # (이전 버전에서 누락되어 Q-Learning이 완전히 죽어있었음)
+            if self._q_agent and thesis:
+                try:
+                    self._q_agent.record_buy(stock_code, thesis)
+                except Exception as e:
+                    logger.debug("Q-Learning record_buy 실패: %s", e)
         return ok
+
+    def _force_defensive_sell(self, profile) -> None:
+        """v4.9: 마감전 세션에서 약세 포지션을 적극 정리한다.
+
+        SESSION_PROFILES에서 force_defensive_sell=True인 세션(PRE_CLOSE)에서
+        보합·약손실 포지션을 장 마감 전에 정리하여 익일 리스크 제거.
+        """
+        for code, pos in list(self.order_manager.positions.items()):
+            if pos.profit_rate < 0.3:
+                try:
+                    pr = pos.profit_rate
+                    logger.info(
+                        "🔶 세션 방어매도: %s(%s) 수익률=%.2f%% | 세션=%s — %s",
+                        pos.stock_name, code, pr, profile.session.value, profile.reason,
+                    )
+                    self.order_manager.execute_sell(
+                        code, f"세션방어({profile.session.value},{pr:.1f}%)",
+                    )
+                    self._on_trade_completed(code, pr, "SELL")
+                except Exception as e:
+                    logger.error("[%s] 세션 방어매도 실패: %s", code, e)
 
     def _check_afternoon_force_sell(self) -> None:
         """14시 이후 약세 포지션 강제 청산."""
@@ -1413,8 +1466,8 @@ class AutoTrader:
             return
 
         for code, pos in list(self.order_manager.positions.items()):
-            if pos.profit_rate <= 0:
-                continue  # 수익 종목만 재분석
+            # v4.9: 손실 종목도 재분석 (추세 소진 시 빠른 탈출)
+            # 이전엔 수익 종목만 재분석하여 손실 포지션이 방치됨
 
             try:
                 # v4.2: 시장별 API 분기
@@ -1450,23 +1503,34 @@ class AutoTrader:
                         upside["upside_pct"],
                     )
 
-                # 추세 소진 + 수익 확보 → 매도 (v4.0: 소액이라도 즉시 확정)
+                # 추세 소진 시 매도 판단
                 sell_worthy, worthy_reason = self.order_manager.is_sell_worthy(code)
-                if not upside["should_hold"] and pos.profit_rate > 0.3 and sell_worthy:
-                    logger.info(
-                        "📉 [%s] 추세 소진 → 수익 확정: %.1f%% (%+,d원) | %s",
-                        pos.stock_name, pos.profit_rate, pos.profit_loss, upside["reason"],
-                    )
+                if not upside["should_hold"]:
                     pr = pos.profit_rate
-                    self.order_manager.execute_sell(
-                        code, f"추세소진(수익={pr:.1f}%) | {upside['reason']}"
-                    )
-                    self._on_trade_completed(code, pr, "SELL")
-                elif not upside["should_hold"] and pos.profit_rate > 0 and not sell_worthy:
-                    logger.info(
-                        "  [%s] 추세 소진이나 수익 부족: %.2f%% (%+,d원) — %s",
-                        pos.stock_name, pos.profit_rate, pos.profit_loss, worthy_reason,
-                    )
+                    if pr > 0.3 and sell_worthy:
+                        logger.info(
+                            "📉 [%s] 추세 소진 → 수익 확정: %.1f%% (%+,d원) | %s",
+                            pos.stock_name, pr, pos.profit_loss, upside["reason"],
+                        )
+                        self.order_manager.execute_sell(
+                            code, f"추세소진(수익={pr:.1f}%) | {upside['reason']}"
+                        )
+                        self._on_trade_completed(code, pr, "SELL")
+                    elif pr < -0.5 and upside["momentum_score"] < -0.3:
+                        # v4.9: 손실 + 추세 소진 + 모멘텀 음전 → 빠른 탈출
+                        logger.info(
+                            "📉 [%s] 손실+추세소진 → 빠른 탈출: %.1f%% | 모멘텀=%.2f | %s",
+                            pos.stock_name, pr, upside["momentum_score"], upside["reason"],
+                        )
+                        self.order_manager.execute_sell(
+                            code, f"추세소진탈출({pr:.1f}%,모멘텀={upside['momentum_score']:.2f})"
+                        )
+                        self._on_trade_completed(code, pr, "SELL")
+                    elif pr > 0 and not sell_worthy:
+                        logger.info(
+                            "  [%s] 추세 소진이나 수익 부족: %.2f%% (%+,d원) — %s",
+                            pos.stock_name, pr, pos.profit_loss, worthy_reason,
+                        )
                 elif self._cycle_count % 10 == 0:
                     logger.info(
                         "  [%s] 보유유지: 수익=%.1f%% 여력=%.1f%% 모멘텀=%.2f 목표=%s원",
