@@ -1321,17 +1321,22 @@ class AutoTrader:
         if isinstance(self.strategy, ExpertStrategy) and self._cycle_count % 3 == 0:
             self._reassess_positions()
 
-        # ── 1. 트레일링 스탑 (v4.6: 진화된 _trailing_base 실제 전달) ──
+        # ── 1. 트레일링 스탑 (v4.9: 0.1%부터 수익 보호) ──
         for code in self.order_manager.check_trailing_stop(trail_pct=self._trailing_base):
             try:
                 pos = self.order_manager.positions.get(code)
-                if not pos or pos.profit_rate <= 0:
+                if not pos:
                     continue
                 pr = pos.profit_rate
                 self.order_manager.execute_sell(code, f"트레일링스탑({pr:.1f}%)")
                 self._on_trade_completed(code, pr, "SELL")
             except Exception as e:
                 logger.error("[%s] 트레일링스탑 매도 실패: %s", code, e)
+
+        # ── 1.5 시간 기반 마이크로 익절 (v4.9 신규) ──
+        # 5분 이상 보유 + 수익 0.1% 이상 → 모멘텀 약화 시 수익 확정
+        # 소액 포지션에서 트레일링/목표가 도달 불가능한 데드존 해소
+        self._check_time_based_micro_exit()
 
         # ── 2. 목표가 도달 확인 (분석 기반 익절) ──
         for code, pos in list(self.order_manager.positions.items()):
@@ -1352,7 +1357,8 @@ class AutoTrader:
         # ── 2.5 논지 기반 매도 (v4.7 신규): "왜 샀는지"의 근거가 깨졌는가? ──
         # 매수 시 판단한 근거(RSI/추세/모멘텀/거래량/MACD)가 여전히 유효한지 확인.
         # 근거 깨짐 + 손실 → 즉시 매도 (잘못된 판단 빠른 정정)
-        # 근거 유효 + 일시 하락 → 홀드 (whipsaw 방지)
+        # v4.9: 논지 깨짐 → 수익/손실 무관하게 즉시 매도
+        # 매수 근거가 무효화됐으면 더 보유할 이유가 없다
         thesis_snaps = self._collect_position_snapshots()
         if thesis_snaps:
             for code, broken_reason in self.order_manager.check_thesis_broken(thesis_snaps):
@@ -1361,16 +1367,20 @@ class AutoTrader:
                     if not pos:
                         continue
                     pr = pos.profit_rate
-                    # 근거 깨짐 + 손실 중 → 매도 (수익 중이면 트레일링에 맡김)
-                    if pr < -0.5:
+                    if pr >= 0:
                         logger.info(
-                            "🔴 논지 매도: %s(%s) 수익률=%.2f%% | 근거깨짐: %s",
+                            "🟡 논지깨짐+수익확정: %s(%s) 수익률=%.2f%% | %s",
                             pos.stock_name, code, pr, broken_reason,
                         )
-                        self.order_manager.execute_sell(
-                            code, f"논지깨짐({pr:.1f}%|{broken_reason})"
+                    else:
+                        logger.info(
+                            "🔴 논지깨짐+손절: %s(%s) 수익률=%.2f%% | %s",
+                            pos.stock_name, code, pr, broken_reason,
                         )
-                        self._on_trade_completed(code, pr, "SELL")
+                    self.order_manager.execute_sell(
+                        code, f"논지깨짐({pr:.1f}%|{broken_reason})"
+                    )
+                    self._on_trade_completed(code, pr, "SELL")
                 except Exception as e:
                     logger.error("[%s] 논지 매도 실패: %s", code, e)
 
@@ -1456,6 +1466,47 @@ class AutoTrader:
                 except Exception as e:
                     logger.error("[%s] 장마감 처리 실패: %s", code, e)
 
+    def _check_time_based_micro_exit(self) -> None:
+        """v4.9: 시간 기반 마이크로 익절 — 데드존 해소.
+
+        조건: 5분+ 보유 AND 수익 0.1%~1.0% AND 최고가 대비 하락 중
+        → 모멘텀이 꺾인 소액 수익을 확정한다.
+        트레일링스탑에 잡히지 않는 "오르다 멈춘" 포지션을 처리.
+        """
+        for code, pos in list(self.order_manager.positions.items()):
+            try:
+                if pos.profit_rate < 0.1 or pos.profit_rate > 1.0:
+                    continue
+
+                buy_time = datetime.strptime(pos.buy_time, "%H:%M:%S")
+                now = datetime.now()
+                buy_dt = now.replace(
+                    hour=buy_time.hour, minute=buy_time.minute,
+                    second=buy_time.second)
+                elapsed_min = (now - buy_dt).total_seconds() / 60
+                if elapsed_min < 5:
+                    continue
+
+                if pos.highest_price <= 0 or pos.current_price <= 0:
+                    continue
+                drop_from_high = (
+                    (pos.highest_price - pos.current_price) / pos.highest_price * 100
+                )
+                if drop_from_high < 0.15:
+                    continue
+
+                pr = pos.profit_rate
+                logger.info(
+                    "💫 마이크로익절: %s(%s) %.0f분보유 수익=%.2f%% 고점대비-%.2f%%",
+                    pos.stock_name, code, elapsed_min, pr, drop_from_high,
+                )
+                self.order_manager.execute_sell(
+                    code, f"마이크로익절({pr:.2f}%,{elapsed_min:.0f}분)"
+                )
+                self._on_trade_completed(code, pr, "SELL")
+            except (ValueError, TypeError):
+                pass
+
     def _reassess_positions(self) -> None:
         """보유 종목의 상승여력을 재분석하여 목표가를 갱신한다.
 
@@ -1507,7 +1558,7 @@ class AutoTrader:
                 sell_worthy, worthy_reason = self.order_manager.is_sell_worthy(code)
                 if not upside["should_hold"]:
                     pr = pos.profit_rate
-                    if pr > 0.3 and sell_worthy:
+                    if pr > 0.1 and sell_worthy:
                         logger.info(
                             "📉 [%s] 추세 소진 → 수익 확정: %.1f%% (%+,d원) | %s",
                             pos.stock_name, pr, pos.profit_loss, upside["reason"],

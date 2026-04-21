@@ -188,20 +188,16 @@ class OrderManager:
         if profit_pct <= self.QUICK_STOP_LOSS_PCT:
             return True, f"빠른 손절 ({profit_pct:.2f}%)"
 
-        # 수익 중: 아주 작은 수익이라도 확정
-        if profit_pct >= self.MIN_SELL_PROFIT_PCT and profit_krw >= self.MIN_SELL_PROFIT_KRW:
-            return True, "매도 가능"
-
+        # v4.9: 수익률 기준만 충족하면 매도 허용 (KRW 하한 제거)
+        # 소액 포지션(50,000원)에서 0.4%=200원인데 KRW 하한이 수익 실현을 차단했음
         if profit_pct >= self.MIN_SELL_PROFIT_PCT:
-            return False, f"수익금 부족 ({profit_krw:,}원 < {self.MIN_SELL_PROFIT_KRW:,}원)"
+            return True, "매도 가능"
 
         return False, f"수익률 부족 ({profit_pct:.2f}% < {self.MIN_SELL_PROFIT_PCT}%)"
 
-    # v4.3: 리스크/리워드 재조정 — 정상 변동폭 고려
-    MIN_SELL_PROFIT_PCT = 0.4    # v4.4: 0.5→0.4% (더 빠른 수익 확정)
-    MIN_SELL_PROFIT_KRW = 200    # v4.4: 300→200원 (소액도 확정)
-    MIN_HOLD_SECONDS = 90        # v4.4: 2분→1.5분 (빠른 수익 확정)
-    QUICK_STOP_LOSS_PCT = -2.0   # v4.4: 빠른 손절로 큰 손실 방지
+    MIN_SELL_PROFIT_PCT = 0.3    # v4.9: 0.4→0.3% (소액 포지션 수익 실현 가능하게)
+    MIN_HOLD_SECONDS = 90
+    QUICK_STOP_LOSS_PCT = -2.0
 
     def calc_buy_quantity(self, price: int, strength: float = 1.0,
                           per: float = 0, pbr: float = 0,
@@ -436,8 +432,9 @@ class OrderManager:
     def check_trailing_stop(self, trail_pct: float = 0.5) -> list[str]:
         """트레일링 스탑 조건을 확인한다.
 
-        v4.4: 수익 보호 최우선 — 이익 발생 즉시 보호.
-        - 수익 0.3~0.8%: 최고가 대비 0.5% 하락 시 매도 (작은 수익도 사수)
+        v4.9: 수익 보호 최우선 — 극소 수익도 놓치지 않는다.
+        - 수익 0.1~0.4%: 최고가 대비 0.3% 하락 시 매도 (마이크로 수익 사수)
+        - 수익 0.4~0.8%: 최고가 대비 0.5% 하락 시 매도
         - 수익 0.8~2%:   최고가 대비 0.7% 하락 시 매도
         - 수익 2%+:      최고가 대비 1.0% 하락 시 매도
         """
@@ -445,16 +442,17 @@ class OrderManager:
         for code, pos in self.positions.items():
             if pos.highest_price <= 0:
                 continue
-            if pos.profit_rate <= 0.3:
+            if pos.profit_rate <= 0.1:
                 continue
 
-            # v4.4: 더 타이트한 트레일링 (수익 사수 최우선)
             if pos.profit_rate >= 2.0:
-                effective_trail = 1.0   # v4.4: 1.5→1.0
+                effective_trail = 1.0
             elif pos.profit_rate >= 0.8:
-                effective_trail = 0.7   # v4.4: 1.0→0.7
+                effective_trail = 0.7
+            elif pos.profit_rate >= 0.4:
+                effective_trail = trail_pct
             else:
-                effective_trail = trail_pct  # v4.4: 0.8→0.5
+                effective_trail = 0.3
 
             drop_from_high = ((pos.highest_price - pos.current_price) / pos.highest_price) * 100
             if drop_from_high >= effective_trail:

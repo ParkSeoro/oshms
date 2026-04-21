@@ -119,10 +119,10 @@ class TestOrderManager(unittest.TestCase):
         self.assertIn("005930", targets)
 
     def test_check_take_profit_below_threshold(self):
-        # 3.57% 수익은 익절 대상이 아님 (20% 미만)
+        # 1.43% 수익은 익절 대상이 아님 (설정 take_profit_pct=3.0% 미만)
         self.manager.positions["005930"] = Position(
             "005930", "삼성전자", 10, 70000, "09:30", "테스트",
-            current_price=72500  # +3.57%
+            current_price=71000  # +1.43%
         )
         targets = self.manager.check_take_profit()
         self.assertNotIn("005930", targets)
