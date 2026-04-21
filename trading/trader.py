@@ -190,10 +190,9 @@ class AutoTrader:
         logger.info("매매 시간: %s ~ %s", self.settings.trading_start_time, self.settings.trading_end_time)
         logger.info("최대 매수금액: %s원", f"{self.settings.max_buy_amount:,}")
         logger.info("최대 보유종목: %d개", self.settings.max_hold_count)
-        logger.info("손절: %.1f%% / 최소매도수익: %.1f%%(또는 %s원)",
+        logger.info("손절: %.1f%% / 최소매도수익: %.1f%%",
                      self.settings.stop_loss_pct,
-                     self.order_manager.MIN_SELL_PROFIT_PCT,
-                     f"{self.order_manager.MIN_SELL_PROFIT_KRW:,}")
+                     self.order_manager.MIN_SELL_PROFIT_PCT)
         logger.info("감시 주기: %d초 | 종목풀: 전체 시장 스캔", interval)
         if self._evolution:
             logger.info("진화 엔진: 활성 (세대 #%d)", self._evolution.state.generation)
