@@ -57,9 +57,9 @@ class SessionProfile:
 # ── 세션 프로필 정의 ─────────────────────────────────────────────────────────
 # 수익률 안정화를 위한 핵심 설계:
 # - 오프닝: 진입 금지 (갭 메우기/리버설 빈번, 확률 낮음)
-# - 오전장: 주 거래 윈도우 (최대 4건, 확신도 70+)
+# - 오전장: 주 거래 윈도우 (최대 4건, 확신도 40+)
 # - 점심: 진입 금지 (유동성 고갈 → 체결 불리)
-# - 오후장: 제한적 진입 (최대 2건, 확신도 75+ — 더 엄격)
+# - 오후장: 제한적 진입 (최대 2건, 확신도 50+ — 오전보다 엄격)
 # - 마감전: 진입 금지 + 약세 청산
 SESSION_PROFILES: dict[TradingSession, SessionProfile] = {
     TradingSession.PRE_OPEN: SessionProfile(
@@ -76,7 +76,7 @@ SESSION_PROFILES: dict[TradingSession, SessionProfile] = {
     ),
     TradingSession.MORNING: SessionProfile(
         session=TradingSession.MORNING,
-        allow_new_entry=True, min_conviction=70.0, size_mult=1.0,
+        allow_new_entry=True, min_conviction=40.0, size_mult=1.0,
         max_new_entries=4, force_defensive_sell=False,
         reason="주 거래 윈도우",
     ),
@@ -88,9 +88,9 @@ SESSION_PROFILES: dict[TradingSession, SessionProfile] = {
     ),
     TradingSession.AFTERNOON: SessionProfile(
         session=TradingSession.AFTERNOON,
-        allow_new_entry=True, min_conviction=75.0, size_mult=0.7,
+        allow_new_entry=True, min_conviction=50.0, size_mult=0.7,
         max_new_entries=2, force_defensive_sell=False,
-        reason="2차 모멘텀 (엄격 기준)",
+        reason="2차 모멘텀 (오전보다 엄격)",
     ),
     TradingSession.PRE_CLOSE: SessionProfile(
         session=TradingSession.PRE_CLOSE,

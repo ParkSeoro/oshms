@@ -27,10 +27,11 @@
 from dataclasses import dataclass
 
 
-# 진입 임계값
-MIN_CONVICTION_TO_ENTER = 70.0  # 이 값 미만은 무조건 진입 금지
-HALF_SIZE_THRESHOLD = 85.0      # 이 값 미만은 반 포지션
-FULL_SIZE_THRESHOLD = 95.0      # 이 값 이상은 최대 포지션
+# 진입 임계값 (v4.9.1: 현실적 시장 데이터 기준으로 재조정)
+# 이전 70/85/95는 모든 지표가 동시 최고일 때만 진입 가능 → 거래 0건
+MIN_CONVICTION_TO_ENTER = 40.0  # 보통 신호(39점)도 진입 허용
+HALF_SIZE_THRESHOLD = 55.0      # 좋은 신호부터 표준 포지션
+FULL_SIZE_THRESHOLD = 70.0      # 강한 신호만 최대 포지션
 
 
 @dataclass

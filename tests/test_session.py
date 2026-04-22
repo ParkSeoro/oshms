@@ -52,7 +52,7 @@ class TestSessionProfiles(unittest.TestCase):
     def test_morning_is_primary_window(self):
         profile = SESSION_PROFILES[TradingSession.MORNING]
         self.assertTrue(profile.allow_new_entry)
-        self.assertEqual(profile.min_conviction, 70.0)
+        self.assertEqual(profile.min_conviction, 40.0)
         self.assertEqual(profile.size_mult, 1.0)
         self.assertEqual(profile.max_new_entries, 4)
 

@@ -47,7 +47,7 @@ class TestConvictionCalc(unittest.TestCase):
         self.assertEqual(s.total, 0.0)
 
     def test_weak_buy_below_entry_threshold(self):
-        """약한 매수 신호는 총점 70 미만이어야 한다."""
+        """약한 매수 신호는 MIN_CONVICTION_TO_ENTER 미만이어야 한다."""
         s = calc_conviction(
             expert_total_score=0.22,  # 임계선 언저리
             expert_confidence=0.4,
@@ -56,7 +56,7 @@ class TestConvictionCalc(unittest.TestCase):
             contract_strength=110,
             session_fit=0.3,
         )
-        self.assertLess(s.total, 70.0, f"약한 신호가 진입했다: {s.describe()}")
+        self.assertLess(s.total, MIN_CONVICTION_TO_ENTER, f"약한 신호가 진입했다: {s.describe()}")
 
     def test_strong_buy_qualifies(self):
         """강한 매수 신호(모든 지표 양호)는 HALF 이상."""
