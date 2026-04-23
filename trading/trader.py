@@ -1339,7 +1339,16 @@ class AutoTrader:
 
         # ── 2. 목표가 도달 확인 (분석 기반 익절) ──
         for code, pos in list(self.order_manager.positions.items()):
-            if pos.target_price > 0 and pos.current_price >= pos.target_price:
+            if pos.target_price <= 0:
+                continue
+            # v4.9.1: 목표가가 매수가 이하면 잘못된 값 → 무시 (즉시매도 방지)
+            if pos.target_price <= pos.avg_price:
+                logger.debug(
+                    "목표가 무효: %s 목표=%s <= 매수가=%s → 초기화",
+                    code, f"{pos.target_price:,}", f"{pos.avg_price:,}")
+                pos.target_price = 0
+                continue
+            if pos.current_price >= pos.target_price:
                 try:
                     pr = pos.profit_rate
                     logger.info(
@@ -1540,10 +1549,11 @@ class AutoTrader:
 
                 upside = self.strategy.estimate_upside(code, candles, current_price)
 
-                # 목표가 갱신 (상향만 — 하향은 안 함)
-                if upside["target_price"] > pos.target_price:
+                # 목표가 갱신 (상향만, 매수가 이상만)
+                new_target = upside["target_price"]
+                if new_target > pos.target_price and new_target > pos.avg_price:
                     old = pos.target_price
-                    pos.target_price = upside["target_price"]
+                    pos.target_price = new_target
                     pos.estimated_upside = upside["upside_pct"]
                     logger.info(
                         "📈 [%s] 목표가 상향: %s→%s원 (여력=%.1f%%)",

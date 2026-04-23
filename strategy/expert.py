@@ -1049,6 +1049,13 @@ class ExpertStrategy(BaseStrategy):
                     "momentum_score": 0, "should_hold": False, "reason": "기술적 데이터 부족"}
 
         target = self._calc_target_price(analysis)
+
+        # v4.9.1: SELL 결정 시 _calc_target_price가 price*0.97 (손절 목표)를 반환하는데
+        # 이것을 target_price로 쓰면 보유 중인 포지션이 즉시 "목표가도달"로 매도됨.
+        # estimate_upside는 상승여력 분석용이므로 하방 타겟은 0으로 처리.
+        if target > 0 and target <= price:
+            target = 0
+
         upside_pct = ((target - price) / price * 100) if target > 0 else 0
 
         # ── 추세 생존 판단 ──
