@@ -554,6 +554,12 @@ def api_manual_sell():
         if not result["success"]:
             return jsonify({"error": f"매도 실패: {result.get('message', '알 수 없는 오류')}"}), 500
 
+        # v4.9.1: trader 연동 — 수동 매도 시 order_manager에서도 제거
+        trader = _state.get("trader")
+        if trader and hasattr(trader, 'order_manager'):
+            if stock_code in trader.order_manager.positions:
+                del trader.order_manager.positions[stock_code]
+
         # 거래 기록 저장
         _log_manual_trade(stock_code, stock_name, "SELL", quantity,
                           holding.get("current_price", 0), "사용자 강제 매도")
