@@ -1909,13 +1909,16 @@ class AutoTrader:
             else:
                 signal_type = SignalType.HOLD
 
+            # v4.9.1: 매수 시점 목표가를 정확히 계산 (ExpertAnalysis엔 필드 없음)
+            buy_target_price = self.strategy._calc_target_price(analysis) if signal_type == SignalType.BUY else 0
+
             reason_str = " | ".join(analysis.reasons[:3]) if analysis.reasons else analysis.decision
             signal = Signal(
                 signal_type=signal_type,
                 stock_code=stock_code,
                 reason=reason_str,
                 strength=analysis.confidence,
-                target_price=getattr(analysis, '_target_price', 0),
+                target_price=buy_target_price,
             )
         else:
             signal = self.strategy.analyze(stock_code, candles, current_price)

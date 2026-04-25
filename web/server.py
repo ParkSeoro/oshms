@@ -584,6 +584,13 @@ def api_manual_buy():
         api = _get_api()
         s = _get_settings()
 
+        # v4.9.1: 세션 확인 (경고만 — 수동 매수는 허용하되 사용자에게 알림)
+        from strategy.session import get_profile
+        profile = get_profile()
+        session_warning = ""
+        if not profile.allow_new_entry:
+            session_warning = f" ⚠ 현재 세션({profile.session.value})은 매수 비추천 시간대입니다."
+
         # 현재가 조회
         price_data = api.get_current_price(stock_code)
         if not price_data or not price_data.get("price"):
@@ -602,12 +609,22 @@ def api_manual_buy():
         if not result["success"]:
             return jsonify({"error": f"매수 실패: {result.get('message', '알 수 없는 오류')}"}), 500
 
-        # 거래 기록 저장
+        # v4.9.1: 자동매매 trader가 실행 중이면 포지션 동기화
+        trader = _state.get("trader")
+        if trader and hasattr(trader, 'order_manager'):
+            from trading.order_manager import Position
+            trader.order_manager.positions[stock_code] = Position(
+                stock_code=stock_code, stock_name=stock_name,
+                quantity=quantity, avg_price=price,
+                buy_time=__import__('datetime').datetime.now().strftime("%H:%M:%S"),
+                buy_reason="사용자 수동 매수",
+            )
+
         _log_manual_trade(stock_code, stock_name, "BUY", quantity, price, "사용자 수동 매수")
 
         logger.info("수동 매수 완료: %s(%s) %d주 × %s원", stock_name, stock_code, quantity, f"{price:,}")
         return jsonify({
-            "message": f"{stock_name} {quantity}주 매수 주문 완료 ({price:,}원 × {quantity}주 = {price * quantity:,}원)",
+            "message": f"{stock_name} {quantity}주 매수 주문 완료 ({price:,}원 × {quantity}주 = {price * quantity:,}원){session_warning}",
             "stock_code": stock_code,
             "stock_name": stock_name,
             "quantity": quantity,
