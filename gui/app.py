@@ -1,0 +1,2563 @@
+"""OSHMS 데스크톱 GUI 앱.
+
+Tkinter 기반 메인 윈도우. Bloomberg Terminal / Arc 영감 프리미엄 다크 테마 v3.
+탭 구성:
+  - 대시보드: 자산 현황, 누적 통계, 진화 상세, 로드맵
+  - 자동매매: 시작/중지, 실시간 로그, 해외주식 지원
+  - 종목분석: 전문가 분석 + AI 리포트 (국내/해외), 분석 중지
+  - AI 어시스턴트: 대화형 AI 매매 조언
+  - 설정: API키, 매매 파라미터, AI 설정
+"""
+
+import json
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext
+from pathlib import Path
+
+from config.settings import Settings
+
+
+class OshmsApp:
+    """메인 데스크톱 애플리케이션."""
+
+    SETTINGS_FILE = Path("config/user_settings.json")
+
+    # ──── 프리미엄 다크 테마 v3 (Bloomberg Terminal / Arc 영감) ────
+    COLORS = {
+        # 배경 계열 (순수 다크 — 깊이감 + OLED 친화)
+        "bg": "#0c0e14",
+        "bg2": "#12141c",
+        "surface": "#1a1e2a",
+        "card": "#1e2230",
+        "card_hover": "#262b3c",
+        "border": "#2a3048",
+        "border_accent": "#5b7cff",
+
+        # 텍스트 계열 (고대비, 가독성 극대화)
+        "fg": "#edf0f7",
+        "fg2": "#b0b8d0",
+        "dim": "#7880a0",
+        "dim2": "#505878",
+
+        # 액센트 (일렉트릭 블루 — 더 선명)
+        "accent": "#5b7cff",
+        "accent2": "#9b7dff",
+        "accent_soft": "#1e2850",
+        "accent_hover": "#7b96ff",
+        "accent_glow": "#162040",
+
+        # 상태 색상 (네온 톤 — 한눈에 식별)
+        "green": "#00d68f",
+        "green_bg": "#0a2820",
+        "green_dim": "#00b377",
+        "red": "#ff4d6a",
+        "red_bg": "#2a0f18",
+        "red_dim": "#e63956",
+        "yellow": "#ffc554",
+        "orange": "#ff8a3d",
+
+        # 입력 필드
+        "input_bg": "#141822",
+        "input_border": "#2a3048",
+
+        # 채팅
+        "chat_user_bg": "#1e2850",
+        "chat_ai_bg": "#0a2820",
+
+        # 그림자/글로우
+        "shadow": "#060810",
+    }
+
+    MARKETS = {
+        "KR": "KR 한국",
+        "NASD": "NASD 나스닥",
+        "NYSE": "NYSE 뉴욕",
+        "AMEX": "AMEX",
+        "SEHK": "SEHK 홍콩",
+        "TKSE": "TKSE 일본",
+    }
+
+    MARKET_HOURS = {
+        "KR": ("09:00~15:30", False),
+        "NASD": ("23:30~06:00 (KST)", True),
+        "NYSE": ("23:30~06:00 (KST)", True),
+        "AMEX": ("23:30~06:00 (KST)", True),
+        "SEHK": ("10:30~17:00 (KST)", False),
+        "TKSE": ("09:00~15:00 (KST)", False),
+    }
+
+    VERSION = "3.2.0"
+
+    ROADMAP = [
+        ("v2.4", "AI 분석 (OpenAI/Claude)", True),
+        ("v2.4", "해외 주식 매매 지원", True),
+        ("v2.4", "자동 진화 엔진", True),
+        ("v2.5", "소프트 다크 테마 리디자인", True),
+        ("v2.5", "AI 어시스턴트 (앱 내 대화)", True),
+        ("v2.5", "동적 리스크 관리 (ATR)", True),
+        ("v2.6", "진화 엔진 완전체 (실제 학습 적용)", True),
+        ("v2.6", "전체 시장 스캔 (종목 자동 발굴)", True),
+        ("v2.6", "프리미엄 다크 테마 v2", True),
+        ("v2.7", "분석 기반 목표가 매도 (상승여력 판단)", True),
+        ("v2.7", "호가창 분석 (매수/매도 세력)", True),
+        ("v2.7", "업종 로테이션 분석 (22개 섹터)", True),
+        ("v2.7", "강화 백테스터 (몬테카를로/워크포워드)", True),
+        ("v2.7", "실시간 차트 시각화 엔진", True),
+        ("v2.8", "프리미엄 다크 테마 v3 (Bloomberg/Arc)", True),
+        ("v2.8", "종목분석 드롭다운 + 섹터 빠른선택", True),
+        ("v2.9", "레짐 적응형 전략 전환 (상승→공격, 하락→방어, 횡보→스캘핑)", True),
+        ("v2.9", "멀티 타임프레임 확인 (분봉+일봉 동시 추세 일치 강화)", True),
+        ("v2.9", "자동 리스크 진화 (손절/익절/트레일링 파라미터 자가 최적화)", True),
+        ("v2.9", "패턴 메모리 DB (과거 유사 패턴 검색→성공률 기반 예측)", True),
+        ("v3.0", "전략 앙상블 (Expert+Momentum+Scalping 성과 기반 자동 배분)", True),
+        ("v3.0", "강화학습 보상 시스템 (매매 결과→상태-행동 Q-값 학습)", True),
+        ("v3.1", "실시간 포트폴리오 최적화 (종목간 상관관계+Sharpe 극대화)", True),
+        ("v3.1", "자동 매매 복기 (AI가 과거 매매 분석→개선점 자동 적용)", True),
+        ("v3.2", "빠른 진화 사이클 (5건 거래마다 파라미터 자동 최적화)", True),
+        ("v3.2", "누적 진화 카운팅 (재시작에도 진화 연속성 보장)", True),
+        ("v3.2", "반등 대기 전략 (마이너스 종목 보유 유지→반등 시 익절)", True),
+        ("v3.2", "모멘텀 돌파 매수 (거래량 급등+가격 돌파 자동 포착)", True),
+        ("v3.3", "시장 심리 지표 통합 (공포/탐욕 지수→매수/매도 타이밍 조절)", True),
+        ("v3.3", "동적 비중 조절 (확신도+심리 기반 투자 비중 자동 조절)", True),
+        ("v3.4", "섹터 모멘텀 로테이션 (상위 섹터→집중 매매, 하위 섹터→회피)", True),
+        ("v3.4", "AI 뉴스 분석 (감성 모멘텀 추적→매매 신호 자동 반영)", True),
+        ("v4.0", "소액 빈번 거래 전략 (빠른 회전+손절 복원+당일 전량 청산)", True),
+        ("v4.0", "타이트 트레일링 스탑 (1.5~3% 소액 수익 보호)", True),
+    ]
+
+    # ──── 폰트 설정 ────
+    FONT = "Helvetica"
+    MONO = "Consolas"
+
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("OSHMS - AI Stock Trading System")
+        self.root.geometry("1240x900")
+        self.root.minsize(1020, 740)
+        self.c = self.COLORS
+
+        self.settings = Settings.from_env()
+        self.user_prefs = self._load_user_prefs()
+
+        self._trader = None
+        self._trading_thread = None
+        self._is_trading = False
+        self._auto_refresh_id = None
+        self._state_mgr = None
+        self._evolution = None
+        self._analysis_cancel = threading.Event()
+        self._analysis_thread = None
+        self._kis_api = None  # KISApi 싱글톤 캐시
+
+        # AI 채팅 상태
+        self._chat_messages: list[tuple[str, str]] = []  # (role, content)
+        self._chat_thread = None
+
+        self._build_ui()
+        self._apply_theme()
+        self._load_settings_to_ui()
+        self._load_state_to_dashboard()
+
+    def run(self):
+        self.root.mainloop()
+
+    # ═══════════════════════════════════════════════
+    # 헬퍼 컴포넌트
+    # ═══════════════════════════════════════════════
+
+    def _make_scroll_frame(self, parent):
+        """마우스휠+스크롤바 지원 스크롤 프레임."""
+        canvas = tk.Canvas(parent, highlightthickness=0, bg=self.c["bg"], bd=0)
+        sb = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
+        inner = tk.Frame(canvas, bg=self.c["bg"])
+        inner.bind("<Configure>", lambda _: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw", tags="inner")
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.bind("<Configure>", lambda evt: canvas.itemconfig("inner", width=evt.width))
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        def _on_wheel(evt):
+            canvas.yview_scroll(-1 * (evt.delta // 120 or (1 if evt.num == 4 else -1)), "units")
+        canvas.bind_all("<MouseWheel>", _on_wheel, add="+")
+        canvas.bind_all("<Button-4>", _on_wheel, add="+")
+        canvas.bind_all("<Button-5>", _on_wheel, add="+")
+        return inner, canvas
+
+    def _make_card(self, parent, **kw):
+        """프리미엄 카드 프레임 — 미세한 보더 + 라운드 느낌."""
+        f = tk.Frame(parent, bg=self.c["card"],
+                     highlightbackground=self.c["border"],
+                     highlightthickness=1, **kw)
+        # 카드 내부 여백이 없으면 기본 추가
+        if "padx" not in kw:
+            f.configure(padx=16)
+        if "pady" not in kw:
+            f.configure(pady=12)
+        return f
+
+    def _make_entry(self, parent, var=None, width=25, show="", **kw):
+        """프리미엄 입력 필드 - 포커스 글로우."""
+        e = tk.Entry(parent, textvariable=var, width=width, show=show,
+                     font=(self.MONO, 11), bg=self.c["input_bg"], fg=self.c["fg"],
+                     insertbackground=self.c["accent"], relief=tk.FLAT,
+                     highlightbackground=self.c["input_border"], highlightthickness=1,
+                     highlightcolor=self.c["accent"], **kw)
+        # 포커스 시 글로우 효과
+        e.bind("<FocusIn>", lambda _: e.config(highlightbackground=self.c["accent"],
+                                                highlightthickness=2))
+        e.bind("<FocusOut>", lambda _: e.config(highlightbackground=self.c["input_border"],
+                                                 highlightthickness=1))
+        return e
+
+    def _make_button(self, parent, text, command, color=None, outline=False, **kw):
+        """프리미엄 버튼 — 부드러운 호버 전환."""
+        bg = color or self.c["accent"]
+        if outline:
+            fg_color = bg
+            bg_color = self.c["bg2"]
+        else:
+            fg_color = "#ffffff"
+            bg_color = bg
+
+        btn = tk.Button(parent, text=text, command=command,
+                        font=(self.FONT, 10, "bold"),
+                        bg=bg_color, fg=fg_color,
+                        activebackground=self.c.get("accent_hover", bg),
+                        activeforeground="#ffffff",
+                        relief=tk.FLAT, padx=22, pady=8,
+                        cursor="hand2",
+                        borderwidth=0,
+                        highlightthickness=0,
+                        **kw)
+
+        hover_bg = self.c.get("accent_hover", bg)
+        normal_bg = bg_color
+
+        def _on_enter(e):
+            if str(btn.cget("state")) != "disabled":
+                btn.config(bg=hover_bg)
+        def _on_leave(e):
+            if str(btn.cget("state")) != "disabled":
+                btn.config(bg=normal_bg)
+        btn.bind("<Enter>", _on_enter)
+        btn.bind("<Leave>", _on_leave)
+
+        return btn
+
+    def _make_label(self, parent, text, size=10, bold=False, color=None, **kw):
+        """스타일된 라벨."""
+        weight = "bold" if bold else "normal"
+        fg = color or self.c["fg"]
+        return tk.Label(parent, text=text, font=(self.FONT, size, weight),
+                        bg=parent.cget("bg"), fg=fg, **kw)
+
+    def _section_header(self, parent, text):
+        """섹션 헤더 — 왼쪽 액센트 바 + 구분선."""
+        f = tk.Frame(parent, bg=parent.cget("bg"))
+        f.pack(fill=tk.X, padx=28, pady=(24, 10))
+        # 왼쪽 액센트 바 (굵은 3px)
+        bar = tk.Frame(f, bg=self.c["accent"], width=4, height=20)
+        bar.pack(side=tk.LEFT, padx=(0, 12))
+        bar.pack_propagate(False)
+        tk.Label(f, text=text, font=(self.FONT, 12, "bold"),
+                 bg=f.cget("bg"), fg=self.c["fg"]).pack(side=tk.LEFT)
+        sep = tk.Frame(f, bg=self.c["border"], height=1)
+        sep.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(16, 0), pady=1)
+
+    # ═══════════════════════════════════════════════
+    # UI 빌드
+    # ═══════════════════════════════════════════════
+
+    def _build_ui(self):
+        c = self.c
+        self.root.configure(bg=c["bg"])
+
+        # ─── 헤더 (글래스모피즘 스타일) ───
+        self.header = tk.Frame(self.root, bg=c["bg2"], height=56)
+        self.header.pack(fill=tk.X)
+        self.header.pack_propagate(False)
+
+        logo_f = tk.Frame(self.header, bg=c["bg2"])
+        logo_f.pack(side=tk.LEFT, padx=28, pady=10)
+
+        # 로고 뱃지 (둥근 사각형 느낌)
+        badge = tk.Frame(logo_f, bg=c["accent"], padx=8, pady=2)
+        badge.pack(side=tk.LEFT, padx=(0, 14))
+        tk.Label(badge, text=" O ", font=(self.FONT, 13, "bold"),
+                 bg=c["accent"], fg="#ffffff").pack()
+
+        tk.Label(logo_f, text="OSHMS", font=(self.FONT, 17, "bold"),
+                 bg=c["bg2"], fg=c["fg"]).pack(side=tk.LEFT)
+        tk.Label(logo_f, text=f" v{self.VERSION}",
+                 font=(self.MONO, 9), bg=c["bg2"],
+                 fg=c["accent"]).pack(side=tk.LEFT, pady=(4, 0))
+        tk.Label(logo_f, text="  AI Trading",
+                 font=(self.FONT, 10), bg=c["bg2"],
+                 fg=c["dim"]).pack(side=tk.LEFT, padx=(6, 0), pady=(3, 0))
+
+        # 오른쪽 상태 패널
+        status_f = tk.Frame(self.header, bg=c["bg2"])
+        status_f.pack(side=tk.RIGHT, padx=24, pady=10)
+
+        # 투자 모드 뱃지 (모의/실전)
+        mode_text = "MOCK" if self.settings.is_mock else "REAL"
+        mode_color = c["yellow"] if self.settings.is_mock else c["red"]
+        self.mode_label = tk.Label(status_f, text=mode_text,
+                                   font=(self.MONO, 9, "bold"),
+                                   bg=c["bg2"], fg=mode_color)
+        self.mode_label.pack(side=tk.LEFT, padx=(0, 12))
+
+        # 진화 세대 뱃지
+        self.evo_label = tk.Label(status_f, text="", font=(self.MONO, 9, "bold"),
+                                  bg=c["bg2"], fg=c["yellow"])
+        self.evo_label.pack(side=tk.LEFT, padx=(0, 16))
+
+        # 상태 표시 (파란 점 + 텍스트)
+        self.status_dot = tk.Label(status_f, text="●", font=("", 10),
+                                   bg=c["bg2"], fg=c["dim2"])
+        self.status_dot.pack(side=tk.LEFT, padx=(0, 5))
+        self.status_label = tk.Label(status_f, text="대기중",
+                                     font=(self.FONT, 10, "bold"),
+                                     bg=c["bg2"], fg=c["dim"])
+        self.status_label.pack(side=tk.LEFT)
+
+        # 헤더 하단 그라데이션 라인 (accent → transparent)
+        tk.Frame(self.root, bg=c["accent"], height=2).pack(fill=tk.X)
+        tk.Frame(self.root, bg=c["border"], height=1).pack(fill=tk.X)
+
+        # ─── 탭 노트북 ───
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        self._build_dashboard_tab()
+        self._build_trading_tab()
+        self._build_analysis_tab()
+        self._build_chat_tab()
+        self._build_settings_tab()
+
+    # ═══════════════════════════════════════════════
+    # 대시보드 탭
+    # ═══════════════════════════════════════════════
+
+    def _build_dashboard_tab(self):
+        frame = tk.Frame(self.notebook, bg=self.c["bg"])
+        self.notebook.add(frame, text="   대시보드   ")
+        inner, self._dash_canvas = self._make_scroll_frame(frame)
+        c = self.c
+
+        # ── 자산 카드 행 ──
+        self._section_header(inner, "자산 현황")
+        cards_f = tk.Frame(inner, bg=c["bg"])
+        cards_f.pack(fill=tk.X, padx=28, pady=(0, 6))
+
+        self.card_labels = {}
+        items = [
+            ("total_asset", "총 자산", "-- 원", c["accent"]),
+            ("total_profit", "총 손익", "-- 원", c["green"]),
+            ("profit_rate", "수익률", "--", c["accent2"]),
+            ("hold_count", "보유 종목", "0 개", c["yellow"]),
+            ("today_trades", "오늘 거래", "0 건", c["dim"]),
+        ]
+        for i, (key, title, default, color) in enumerate(items):
+            card = self._make_card(cards_f, padx=18, pady=14)
+            card.grid(row=0, column=i, padx=(0, 8), sticky="nsew")
+            cards_f.columnconfigure(i, weight=1)
+            # 상단 액센트 라인 (더 눈에 띄게)
+            tk.Frame(card, bg=color, height=3).pack(fill=tk.X, pady=(0, 12))
+            tk.Label(card, text=title, font=(self.FONT, 9),
+                     bg=c["card"], fg=c["dim"]).pack(anchor=tk.W)
+            lbl = tk.Label(card, text=default,
+                          font=(self.MONO, 18, "bold"),
+                          bg=c["card"], fg=c["fg"])
+            lbl.pack(anchor=tk.W, pady=(8, 0))
+            self.card_labels[key] = lbl
+
+        # ── 누적 통계 ──
+        self._section_header(inner, "누적 통계")
+        stats_f = tk.Frame(inner, bg=c["bg"])
+        stats_f.pack(fill=tk.X, padx=28, pady=(0, 4))
+
+        self.stat_labels = {}
+        stat_items = [
+            ("cum_trades", "총 거래", "0 건", c["fg"]),
+            ("cum_wins", "승률", "--", c["green"]),
+            ("cum_profit", "누적 수익", "0 원", c["fg"]),
+            ("best_trade", "최고 수익", "0 원", c["yellow"]),
+            ("evo_gen", "진화 세대", "#0", c["accent2"]),
+        ]
+        for i, (key, title, default, val_color) in enumerate(stat_items):
+            card = self._make_card(stats_f, padx=16, pady=12)
+            card.grid(row=0, column=i, padx=(0, 8), sticky="nsew")
+            stats_f.columnconfigure(i, weight=1)
+            tk.Label(card, text=title, font=(self.FONT, 9),
+                     bg=c["card"], fg=c["dim"]).pack(anchor=tk.W)
+            lbl = tk.Label(card, text=default, font=(self.MONO, 15, "bold"),
+                          bg=c["card"], fg=val_color)
+            lbl.pack(anchor=tk.W, pady=(6, 0))
+            self.stat_labels[key] = lbl
+
+        # ── 진화 엔진 상태 ──
+        self._section_header(inner, "진화 엔진 상태")
+        evo_card = self._make_card(inner, padx=22, pady=18)
+        evo_card.pack(fill=tk.X, padx=28, pady=(0, 4))
+        self.evo_detail_text = tk.Text(evo_card, height=10,
+                                        font=(self.MONO, 10),
+                                        bg=c["card"], fg=c["fg2"],
+                                        relief=tk.FLAT, wrap=tk.WORD,
+                                        state=tk.DISABLED,
+                                        highlightthickness=0)
+        evo_sb = ttk.Scrollbar(evo_card, orient=tk.VERTICAL,
+                               command=self.evo_detail_text.yview)
+        self.evo_detail_text.configure(yscrollcommand=evo_sb.set)
+        self.evo_detail_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        evo_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._load_evolution_details()
+
+        # ── 코드 자체 진화 엔진 ──
+        self._section_header(inner, "코드 자체 진화 (메타 진화)")
+        code_evo_card = self._make_card(inner, padx=22, pady=18)
+        code_evo_card.pack(fill=tk.X, padx=28, pady=(0, 4))
+        self.code_evo_text = tk.Text(code_evo_card, height=12,
+                                      font=(self.MONO, 10),
+                                      bg=c["card"], fg=c["fg2"],
+                                      relief=tk.FLAT, wrap=tk.WORD,
+                                      state=tk.DISABLED,
+                                      highlightthickness=0)
+        code_evo_sb = ttk.Scrollbar(code_evo_card, orient=tk.VERTICAL,
+                                     command=self.code_evo_text.yview)
+        self.code_evo_text.configure(yscrollcommand=code_evo_sb.set)
+        self.code_evo_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        code_evo_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._load_code_evolution_details()
+
+        # ── 보유 종목 ──
+        self._section_header(inner, "보유 종목")
+        hold_hdr = tk.Frame(inner, bg=c["bg"])
+        hold_hdr.pack(fill=tk.X, padx=28, pady=(0, 6))
+        self.holdings_count_lbl = tk.Label(hold_hdr, text="0 종목",
+                                           font=(self.MONO, 10, "bold"),
+                                           bg=c["bg"], fg=c["accent"])
+        self.holdings_count_lbl.pack(side=tk.LEFT)
+
+        cols = ("종목명", "수량", "평균가", "현재가", "수익률", "목표가", "여력")
+        tree_card = self._make_card(inner)
+        tree_card.pack(fill=tk.X, padx=28, pady=(0, 4))
+        self.holdings_tree = ttk.Treeview(tree_card, columns=cols,
+                                          show="headings", height=5)
+        col_widths = {"종목명": 130, "수량": 65, "평균가": 95, "현재가": 95,
+                      "수익률": 80, "목표가": 95, "여력": 70}
+        for col in cols:
+            self.holdings_tree.heading(col, text=col)
+            w = col_widths.get(col, 90)
+            anchor = tk.W if col == "종목명" else tk.E
+            self.holdings_tree.column(col, width=w, anchor=anchor)
+        tree_sb = ttk.Scrollbar(tree_card, orient=tk.VERTICAL,
+                                command=self.holdings_tree.yview)
+        self.holdings_tree.configure(yscrollcommand=tree_sb.set)
+        self.holdings_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tree_sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 보유 종목 우클릭 → 강제 매도
+        self.holdings_tree.bind("<Button-3>", self._on_holdings_right_click)
+        self.holdings_tree.bind("<Double-1>", self._on_holdings_double_click)
+
+        # ── 수동 매매 ──
+        self._section_header(inner, "수동 매매")
+        manual_card = self._make_card(inner, padx=22, pady=16)
+        manual_card.pack(fill=tk.X, padx=28, pady=(0, 4))
+
+        # 매수 행
+        buy_row = tk.Frame(manual_card, bg=c["card"])
+        buy_row.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(buy_row, text="매수", font=(self.FONT, 10, "bold"),
+                 bg=c["card"], fg=c["green"]).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(buy_row, text="종목코드", font=(self.FONT, 9),
+                 bg=c["card"], fg=c["dim"]).pack(side=tk.LEFT, padx=(0, 4))
+        self.manual_buy_code = self._make_entry(buy_row, width=8)
+        self.manual_buy_code.pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(buy_row, text="금액(원)", font=(self.FONT, 9),
+                 bg=c["card"], fg=c["dim"]).pack(side=tk.LEFT, padx=(0, 4))
+        self.manual_buy_amount = self._make_entry(buy_row, width=10)
+        self.manual_buy_amount.pack(side=tk.LEFT, padx=(0, 10))
+        self._make_button(buy_row, "  매수 주문  ", self._manual_buy,
+                          color=c["green"]).pack(side=tk.LEFT)
+
+        # 매도 행
+        sell_row = tk.Frame(manual_card, bg=c["card"])
+        sell_row.pack(fill=tk.X)
+        tk.Label(sell_row, text="매도", font=(self.FONT, 10, "bold"),
+                 bg=c["card"], fg=c["red"]).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(sell_row, text="종목코드", font=(self.FONT, 9),
+                 bg=c["card"], fg=c["dim"]).pack(side=tk.LEFT, padx=(0, 4))
+        self.manual_sell_code = self._make_entry(sell_row, width=8)
+        self.manual_sell_code.pack(side=tk.LEFT, padx=(0, 10))
+        self._make_button(sell_row, "  전량 매도  ", self._manual_sell,
+                          color=c["red"]).pack(side=tk.LEFT)
+        tk.Label(sell_row, text="  ※ 보유 종목 더블클릭/우클릭으로도 매도 가능",
+                 font=(self.FONT, 8), bg=c["card"], fg=c["dim2"]).pack(side=tk.LEFT, padx=8)
+
+        # ── 최근 거래 ──
+        self._section_header(inner, "최근 거래")
+        trade_cols = ("시간", "종목", "매매", "수량", "가격", "손익")
+        trades_card = self._make_card(inner)
+        trades_card.pack(fill=tk.X, padx=28, pady=(0, 4))
+        self.trades_tree = ttk.Treeview(trades_card, columns=trade_cols,
+                                        show="headings", height=8)
+        for col in trade_cols:
+            self.trades_tree.heading(col, text=col)
+            w = 150 if col == "시간" else 120 if col == "종목" else 85
+            anchor = tk.E if col in ("수량", "가격", "손익") else tk.W
+            self.trades_tree.column(col, width=w, anchor=anchor)
+        trades_sb = ttk.Scrollbar(trades_card, orient=tk.VERTICAL,
+                                  command=self.trades_tree.yview)
+        self.trades_tree.configure(yscrollcommand=trades_sb.set)
+        self.trades_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        trades_sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # ── 새로고침 버튼 ──
+        btn_f = tk.Frame(inner, bg=c["bg"])
+        btn_f.pack(fill=tk.X, padx=28, pady=(16, 4))
+        self.refresh_btn = self._make_button(btn_f, "  ↻ 새로고침  ",
+                                              self._refresh_balance)
+        self.refresh_btn.pack(side=tk.LEFT)
+        self.auto_refresh_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(btn_f, text="자동 갱신 (30초)",
+                       variable=self.auto_refresh_var,
+                       font=(self.FONT, 9), bg=c["bg"], fg=c["dim"],
+                       selectcolor=c["accent_soft"], activebackground=c["bg"],
+                       activeforeground=c["fg"],
+                       highlightthickness=0,
+                       borderwidth=0).pack(side=tk.LEFT, padx=14)
+
+        # ── 개발 로드맵 ──
+        self._section_header(inner, "개발 로드맵")
+        roadmap_card = self._make_card(inner, padx=22, pady=18)
+        roadmap_card.pack(fill=tk.X, padx=28, pady=(0, 4))
+        for ver, feature, done in self.ROADMAP:
+            row_f = tk.Frame(roadmap_card, bg=c["card"])
+            row_f.pack(fill=tk.X, pady=4)
+            # 상태 아이콘 (완료: 체크, 미완: 점)
+            icon = "✓" if done else "○"
+            icon_color = c["green"] if done else c["dim2"]
+            tk.Label(row_f, text=icon, font=(self.FONT, 9, "bold"),
+                     bg=c["card"], fg=icon_color).pack(side=tk.LEFT, padx=(0, 10))
+            # 버전 뱃지 (배경색 차등)
+            ver_bg = c["accent_soft"] if not done else c["surface"]
+            ver_fg = c["accent"] if not done else c["dim"]
+            ver_lbl = tk.Label(row_f, text=f" {ver} ", font=(self.MONO, 9, "bold"),
+                               bg=ver_bg, fg=ver_fg, padx=4, pady=1)
+            ver_lbl.pack(side=tk.LEFT, padx=(0, 12))
+            tk.Label(row_f, text=feature, font=(self.FONT, 10),
+                     bg=c["card"],
+                     fg=c["fg"] if done else c["dim"]
+                     ).pack(side=tk.LEFT)
+            if done:
+                tk.Label(row_f, text=" DONE ", font=(self.MONO, 8, "bold"),
+                         bg=c["green_bg"], fg=c["green"],
+                         padx=8, pady=2).pack(side=tk.RIGHT)
+            else:
+                tk.Label(row_f, text=" TODO ", font=(self.MONO, 8),
+                         bg=c["bg2"], fg=c["orange"],
+                         padx=8, pady=2).pack(side=tk.RIGHT)
+
+        # ── 해외 시장 거래시간 ──
+        self._section_header(inner, "해외 시장 거래시간 (한국시간 기준)")
+        hours_card = self._make_card(inner, padx=22, pady=18)
+        hours_card.pack(fill=tk.X, padx=28, pady=(0, 28))
+        for mk, (hours, has_ext) in self.MARKET_HOURS.items():
+            row_f = tk.Frame(hours_card, bg=c["card"])
+            row_f.pack(fill=tk.X, pady=4)
+            # 시장 이름 뱃지
+            mk_lbl = tk.Label(row_f, text=f" {self.MARKETS.get(mk, mk)} ",
+                              font=(self.MONO, 10, "bold"), bg=c["accent_soft"],
+                              fg=c["accent"], padx=4, pady=1)
+            mk_lbl.pack(side=tk.LEFT, padx=(0, 12))
+            tk.Label(row_f, text=hours, font=(self.MONO, 10),
+                     bg=c["card"], fg=c["fg2"]).pack(side=tk.LEFT)
+            if has_ext:
+                tk.Label(row_f, text=" EXT ",
+                         font=(self.MONO, 8, "bold"),
+                         bg=c["bg2"], fg=c["yellow"],
+                         padx=6, pady=2).pack(side=tk.RIGHT)
+
+        us_note = tk.Label(
+            hours_card,
+            text="* 미국: 프리마켓(18:00~23:30 KST), 애프터마켓(06:00~10:00 KST) 지정가 주문 가능\n"
+                 "* KIS Open API에서 해외 시간외 주문 시 ORD_SVR_DVSN_CD='0', 지정가 사용",
+            font=(self.FONT, 9), bg=c["card"], fg=c["dim"], justify=tk.LEFT,
+        )
+        us_note.pack(anchor=tk.W, pady=(12, 0))
+
+    # ═══════════════════════════════════════════════
+    # 자동매매 탭
+    # ═══════════════════════════════════════════════
+
+    def _build_trading_tab(self):
+        frame = tk.Frame(self.notebook, bg=self.c["bg"])
+        self.notebook.add(frame, text="   자동매매   ")
+        c = self.c
+
+        # 설정 카드
+        top = self._make_card(frame, padx=22, pady=18)
+        top.pack(fill=tk.X, padx=24, pady=(18, 10))
+
+        # 시장 선택
+        r1 = tk.Frame(top, bg=c["card"])
+        r1.pack(fill=tk.X, pady=(0, 12))
+        self._make_label(r1, "마켓", 11, True).pack(side=tk.LEFT, padx=(0, 12))
+        self.market_var = tk.StringVar(value="KR")
+        market_cb = ttk.Combobox(r1, textvariable=self.market_var, width=18,
+                                 values=list(self.MARKETS.values()),
+                                 state="readonly")
+        market_cb.set("KR 한국")
+        market_cb.pack(side=tk.LEFT, padx=6)
+        self.market_hours_lbl = tk.Label(r1, text="09:00~15:30",
+                                         font=(self.FONT, 9),
+                                         bg=c["card"], fg=c["dim"])
+        self.market_hours_lbl.pack(side=tk.LEFT, padx=(14, 0))
+        market_cb.bind("<<ComboboxSelected>>", self._on_market_changed)
+
+        # 종목/전략/주기
+        r2 = tk.Frame(top, bg=c["card"])
+        r2.pack(fill=tk.X, pady=(0, 12))
+        self._make_label(r2, "종목").pack(side=tk.LEFT)
+        self.stocks_entry = self._make_entry(r2, width=20)
+        self.stocks_entry.pack(side=tk.LEFT, padx=(8, 0))
+        self.stocks_entry.insert(0, "자동선정")
+
+        self._make_label(r2, "전략").pack(side=tk.LEFT, padx=(18, 0))
+        self.strategy_var = tk.StringVar(value="expert")
+        ttk.Combobox(r2, textvariable=self.strategy_var, width=12,
+                     values=["expert", "scalping", "momentum", "combined"],
+                     state="readonly").pack(side=tk.LEFT, padx=6)
+
+        self._make_label(r2, "주기(초)").pack(side=tk.LEFT, padx=(18, 0))
+        self.interval_var = tk.StringVar(value="10")
+        self._make_entry(r2, var=self.interval_var, width=5).pack(side=tk.LEFT, padx=(8, 0))
+
+        # 이전 세션 복원
+        r_resume = tk.Frame(top, bg=c["card"])
+        r_resume.pack(fill=tk.X, pady=(0, 10))
+        self.resume_label = tk.Label(r_resume, text="", font=(self.FONT, 9),
+                                     bg=c["card"], fg=c["dim"])
+        self.resume_label.pack(side=tk.LEFT)
+        self.resume_btn = tk.Button(r_resume, text="이전 세션 이어하기",
+                                    command=self._resume_trading,
+                                    font=(self.FONT, 9, "bold"),
+                                    bg=c["surface"], fg=c["accent"],
+                                    relief=tk.FLAT, padx=12, pady=3,
+                                    cursor="hand2",
+                                    activebackground=c["card"],
+                                    activeforeground=c["accent"])
+
+        # 구분선
+        tk.Frame(top, bg=c["border"], height=1).pack(fill=tk.X, pady=(8, 12))
+
+        # 시작/중지 버튼
+        btn_f = tk.Frame(top, bg=c["card"])
+        btn_f.pack(fill=tk.X, pady=(0, 0))
+        self.start_btn = self._make_button(btn_f, "  ▶  자동매매 시작  ",
+                                           self._start_trading, c["green_dim"])
+        self.start_btn.configure(font=(self.FONT, 12, "bold"), padx=32, pady=12)
+        self.start_btn.pack(side=tk.LEFT, padx=(0, 14))
+        self.stop_btn = self._make_button(btn_f, "  ■  중지  ",
+                                          self._stop_trading, c["red_dim"])
+        self.stop_btn.configure(state=tk.DISABLED, font=(self.FONT, 11, "bold"),
+                                padx=20, pady=10)
+        self.stop_btn.pack(side=tk.LEFT)
+
+        # 로그 영역
+        log_hdr = tk.Frame(frame, bg=c["bg"])
+        log_hdr.pack(fill=tk.X, padx=24, pady=(14, 6))
+        # 액센트 바 + 라벨
+        bar = tk.Frame(log_hdr, bg=c["accent"], width=4, height=18)
+        bar.pack(side=tk.LEFT, padx=(0, 10))
+        bar.pack_propagate(False)
+        self._make_label(log_hdr, "매매 로그", 12, True).pack(side=tk.LEFT)
+        # 지우기 버튼 (호버 효과)
+        clear_btn = tk.Button(log_hdr, text="  지우기  ", font=(self.FONT, 9),
+                  bg=c["surface"], fg=c["dim"], relief=tk.FLAT, cursor="hand2",
+                  command=lambda: self.log_text.delete("1.0", tk.END),
+                  activebackground=c["card"],
+                  activeforeground=c["accent"],
+                  borderwidth=0, highlightthickness=0)
+        clear_btn.pack(side=tk.RIGHT)
+        clear_btn.bind("<Enter>", lambda e: clear_btn.config(fg=c["accent"]))
+        clear_btn.bind("<Leave>", lambda e: clear_btn.config(fg=c["dim"]))
+
+        log_card = self._make_card(frame)
+        log_card.pack(fill=tk.BOTH, expand=True, padx=24, pady=(0, 18))
+        self.log_text = scrolledtext.ScrolledText(
+            log_card, font=(self.MONO, 10), wrap=tk.WORD,
+            bg=c["bg"], fg=c["fg2"], relief=tk.FLAT,
+            insertbackground=c["accent"],
+            selectbackground=c["accent_soft"],
+            highlightthickness=0,
+        )
+        self.log_text.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+
+    # ═══════════════════════════════════════════════
+    # 종목분석 탭
+    # ═══════════════════════════════════════════════
+
+    # 주요 종목 리스트 (코드, 이름, 시장)
+    POPULAR_STOCKS = [
+        # ── 국내 대형주 ──
+        ("005930", "삼성전자", "KR"),
+        ("000660", "SK하이닉스", "KR"),
+        ("373220", "LG에너지솔루션", "KR"),
+        ("005380", "현대차", "KR"),
+        ("000270", "기아", "KR"),
+        ("068270", "셀트리온", "KR"),
+        ("035420", "NAVER", "KR"),
+        ("035720", "카카오", "KR"),
+        ("051910", "LG화학", "KR"),
+        ("006400", "삼성SDI", "KR"),
+        ("105560", "KB금융", "KR"),
+        ("055550", "신한지주", "KR"),
+        ("003670", "포스코퓨처엠", "KR"),
+        ("012330", "현대모비스", "KR"),
+        ("207940", "삼성바이오로직스", "KR"),
+        ("247540", "에코프로비엠", "KR"),
+        ("042700", "한미반도체", "KR"),
+        ("003550", "LG", "KR"),
+        ("034730", "SK", "KR"),
+        ("028260", "삼성물산", "KR"),
+        # ── 해외 대형주 ──
+        ("AAPL", "애플", "NASD"),
+        ("MSFT", "마이크로소프트", "NASD"),
+        ("NVDA", "엔비디아", "NASD"),
+        ("GOOGL", "구글", "NASD"),
+        ("AMZN", "아마존", "NASD"),
+        ("TSLA", "테슬라", "NASD"),
+        ("META", "메타", "NASD"),
+        ("TSM", "TSMC", "NYSE"),
+        ("BRK.B", "버크셔해서웨이", "NYSE"),
+        ("V", "비자", "NYSE"),
+    ]
+
+    def _build_analysis_tab(self):
+        frame = tk.Frame(self.notebook, bg=self.c["bg"])
+        self.notebook.add(frame, text="   종목분석   ")
+        c = self.c
+
+        # ── 종목 선택 카드 ──
+        search_card = self._make_card(frame, padx=22, pady=18)
+        search_card.pack(fill=tk.X, padx=24, pady=(18, 6))
+
+        # Row 1: 시장 + 빠른 종목 선택 드롭다운
+        r1 = tk.Frame(search_card, bg=c["card"])
+        r1.pack(fill=tk.X, pady=(0, 10))
+
+        self._make_label(r1, "시장").pack(side=tk.LEFT)
+        self.analyze_market_var = tk.StringVar(value="KR")
+        mkt_cb = ttk.Combobox(r1, textvariable=self.analyze_market_var,
+                              width=8,
+                              values=["KR", "NASD", "NYSE", "AMEX", "SEHK", "TKSE"],
+                              state="readonly")
+        mkt_cb.pack(side=tk.LEFT, padx=(8, 18))
+
+        self._make_label(r1, "종목 선택").pack(side=tk.LEFT)
+        self._stock_select_var = tk.StringVar()
+        stock_values = [f"{s[0]} {s[1]}" for s in self.POPULAR_STOCKS]
+        self._stock_combo = ttk.Combobox(r1, textvariable=self._stock_select_var,
+                                         width=22, values=stock_values)
+        self._stock_combo.set("005930 삼성전자")
+        self._stock_combo.pack(side=tk.LEFT, padx=(8, 10))
+        self._stock_combo.bind("<<ComboboxSelected>>", self._on_stock_selected)
+
+        self.analyze_btn = self._make_button(r1, "  AI 분석  ",
+                                              self._run_analysis, c["accent2"])
+        self.analyze_btn.pack(side=tk.LEFT, padx=(8, 6))
+        self.analyze_stop_btn = self._make_button(r1, " 중지 ",
+                                                   self._stop_analysis,
+                                                   c["red_dim"])
+        self.analyze_stop_btn.configure(state=tk.DISABLED,
+                                         font=(self.FONT, 10))
+        self.analyze_stop_btn.pack(side=tk.LEFT)
+
+        # Row 2: 직접 입력
+        r2 = tk.Frame(search_card, bg=c["card"])
+        r2.pack(fill=tk.X, pady=(0, 8))
+
+        self._make_label(r2, "직접 입력 →", color=c["dim"]).pack(side=tk.LEFT)
+        self._make_label(r2, "코드").pack(side=tk.LEFT, padx=(10, 0))
+        self.analyze_code = self._make_entry(r2, width=10)
+        self.analyze_code.pack(side=tk.LEFT, padx=(6, 14))
+        self.analyze_code.insert(0, "005930")
+
+        self._make_label(r2, "종목명").pack(side=tk.LEFT)
+        self.analyze_name = self._make_entry(r2, width=12)
+        self.analyze_name.pack(side=tk.LEFT, padx=(6, 0))
+        self.analyze_name.insert(0, "삼성전자")
+
+        # Row 3: 섹터별 빠른 선택 버튼
+        r3 = tk.Frame(search_card, bg=c["card"])
+        r3.pack(fill=tk.X, pady=(4, 0))
+        tk.Label(r3, text="빠른선택", font=(self.FONT, 9),
+                 bg=c["card"], fg=c["dim2"]).pack(side=tk.LEFT, padx=(0, 8))
+
+        sector_stocks = [
+            ("반도체", "005930"), ("2차전지", "373220"), ("바이오", "068270"),
+            ("인터넷", "035420"), ("자동차", "005380"), ("금융", "105560"),
+            ("NVDA", "NVDA"), ("TSLA", "TSLA"), ("AAPL", "AAPL"),
+        ]
+        for label, code in sector_stocks:
+            btn = tk.Label(r3, text=label, font=(self.FONT, 9),
+                          bg=c["accent_soft"], fg=c["accent"],
+                          padx=8, pady=2, cursor="hand2")
+            btn.pack(side=tk.LEFT, padx=2)
+            btn.bind("<Button-1>", lambda e, c_=code: self._quick_select_stock(c_))
+            btn.bind("<Enter>", lambda e, w=btn: w.configure(bg=c["accent"], fg="#ffffff"))
+            btn.bind("<Leave>", lambda e, w=btn: w.configure(bg=c["accent_soft"], fg=c["accent"]))
+
+        # ── 결과 영역 ──
+        result_card = self._make_card(frame)
+        result_card.pack(fill=tk.BOTH, expand=True, padx=24, pady=(6, 18))
+        self.analysis_text = scrolledtext.ScrolledText(
+            result_card, font=(self.MONO, 10), wrap=tk.WORD,
+            bg=c["bg"], fg=c["fg2"], relief=tk.FLAT,
+            insertbackground=c["accent"],
+            selectbackground=c["accent_soft"],
+            highlightthickness=0,
+        )
+        self.analysis_text.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+
+    def _on_stock_selected(self, event=None):
+        """드롭다운에서 종목 선택 시 코드/이름/시장 자동 입력."""
+        sel = self._stock_select_var.get()
+        if not sel:
+            return
+        parts = sel.split(" ", 1)
+        code = parts[0]
+        name = parts[1] if len(parts) > 1 else code
+
+        # POPULAR_STOCKS에서 시장 찾기
+        market = "KR"
+        for s_code, s_name, s_market in self.POPULAR_STOCKS:
+            if s_code == code:
+                market = s_market
+                name = s_name
+                break
+
+        self.analyze_market_var.set(market)
+        self.analyze_code.delete(0, tk.END)
+        self.analyze_code.insert(0, code)
+        self.analyze_name.delete(0, tk.END)
+        self.analyze_name.insert(0, name)
+
+    def _quick_select_stock(self, code: str):
+        """빠른선택 버튼 클릭 시."""
+        for s_code, s_name, s_market in self.POPULAR_STOCKS:
+            if s_code == code:
+                self.analyze_market_var.set(s_market)
+                self.analyze_code.delete(0, tk.END)
+                self.analyze_code.insert(0, s_code)
+                self.analyze_name.delete(0, tk.END)
+                self.analyze_name.insert(0, s_name)
+                self._stock_select_var.set(f"{s_code} {s_name}")
+                return
+        # 리스트에 없으면 코드만 입력
+        self.analyze_code.delete(0, tk.END)
+        self.analyze_code.insert(0, code)
+
+    # ═══════════════════════════════════════════════
+    # AI 어시스턴트 탭 (NEW)
+    # ═══════════════════════════════════════════════
+
+    def _build_chat_tab(self):
+        frame = tk.Frame(self.notebook, bg=self.c["bg"])
+        self.notebook.add(frame, text="   AI 어시스턴트   ")
+        c = self.c
+
+        # 상단 안내 배너
+        info_f = tk.Frame(frame, bg=c["bg2"], height=42)
+        info_f.pack(fill=tk.X, padx=0, pady=0)
+        info_f.pack_propagate(False)
+        # AI 아이콘 뱃지
+        ai_badge = tk.Frame(info_f, bg=c["accent2"], padx=6, pady=1)
+        ai_badge.pack(side=tk.LEFT, padx=(24, 10), pady=10)
+        tk.Label(ai_badge, text="AI", font=(self.FONT, 9, "bold"),
+                 bg=c["accent2"], fg="#ffffff").pack()
+        tk.Label(info_f,
+                 text="매매 전략, 종목 분석, 시장 상황 등을 질문하세요",
+                 font=(self.FONT, 10), bg=c["bg2"], fg=c["dim"]
+                 ).pack(side=tk.LEFT)
+
+        # 빠른 질문 칩 버튼
+        quick_f = tk.Frame(frame, bg=c["bg"])
+        quick_f.pack(fill=tk.X, padx=24, pady=(14, 8))
+        tk.Label(quick_f, text="빠른질문", font=(self.FONT, 9),
+                 bg=c["bg"], fg=c["dim2"]).pack(side=tk.LEFT, padx=(0, 10))
+        quick_questions = [
+            ("포트폴리오 분석", "내 현재 포트폴리오 상태를 분석하고 조언해줘"),
+            ("시장 전망", "오늘 한국 주식 시장 전망은 어때? 어떤 전략이 좋을까?"),
+            ("전략 추천", "지금 시점에서 가장 효과적인 매매 전략을 추천해줘"),
+            ("리스크 점검", "현재 설정된 리스크 관리 파라미터가 적절한지 점검해줘"),
+        ]
+        for label, question in quick_questions:
+            btn = tk.Label(quick_f, text=label,
+                           font=(self.FONT, 9),
+                           bg=c["accent_soft"], fg=c["accent"],
+                           padx=14, pady=4, cursor="hand2")
+            btn.pack(side=tk.LEFT, padx=(0, 6))
+            btn.bind("<Button-1>", lambda e, q=question: self._send_quick_chat(q))
+            btn.bind("<Enter>", lambda e, w=btn: w.config(bg=c["accent"], fg="#ffffff"))
+            btn.bind("<Leave>", lambda e, w=btn: w.config(bg=c["accent_soft"], fg=c["accent"]))
+
+        # 채팅 디스플레이
+        chat_card = self._make_card(frame)
+        chat_card.pack(fill=tk.BOTH, expand=True, padx=24, pady=(4, 8))
+
+        self.chat_display = tk.Text(
+            chat_card, font=(self.FONT, 10), wrap=tk.WORD,
+            bg=c["bg"], fg=c["fg2"], relief=tk.FLAT,
+            state=tk.DISABLED, highlightthickness=0,
+            padx=16, pady=12, spacing3=4,
+        )
+        chat_sb = ttk.Scrollbar(chat_card, orient=tk.VERTICAL,
+                                command=self.chat_display.yview)
+        self.chat_display.configure(yscrollcommand=chat_sb.set)
+        self.chat_display.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        chat_sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 채팅 텍스트 태그 설정
+        self.chat_display.tag_configure("user_name",
+                                         foreground=c["accent"],
+                                         font=(self.FONT, 10, "bold"))
+        self.chat_display.tag_configure("ai_name",
+                                         foreground=c["green"],
+                                         font=(self.FONT, 10, "bold"))
+        self.chat_display.tag_configure("user_msg",
+                                         foreground=c["fg"],
+                                         font=(self.FONT, 10),
+                                         lmargin1=16, lmargin2=16,
+                                         spacing3=8)
+        self.chat_display.tag_configure("ai_msg",
+                                         foreground=c["fg2"],
+                                         font=(self.FONT, 10),
+                                         lmargin1=16, lmargin2=16,
+                                         spacing3=8)
+        self.chat_display.tag_configure("system_msg",
+                                         foreground=c["dim"],
+                                         font=(self.FONT, 9, "italic"),
+                                         justify=tk.CENTER,
+                                         spacing3=8)
+        self.chat_display.tag_configure("divider",
+                                         foreground=c["border"],
+                                         font=("", 2))
+
+        # 초기 환영 메시지
+        self._add_chat_system("OSHMS AI 어시스턴트에 오신 것을 환영합니다.")
+        self._add_chat_system("매매 전략, 종목 분석, 시장 상황 등 무엇이든 질문하세요.")
+
+        # 입력 영역
+        input_f = tk.Frame(frame, bg=c["bg"])
+        input_f.pack(fill=tk.X, padx=24, pady=(0, 18))
+
+        input_card = tk.Frame(input_f, bg=c["input_bg"],
+                              highlightbackground=c["input_border"],
+                              highlightthickness=1,
+                              highlightcolor=c["accent"])
+        input_card.pack(fill=tk.X)
+
+        self.chat_input = tk.Entry(input_card, font=(self.FONT, 11),
+                                   bg=c["input_bg"], fg=c["fg"],
+                                   relief=tk.FLAT,
+                                   insertbackground=c["accent"])
+        self.chat_input.pack(side=tk.LEFT, fill=tk.X, expand=True,
+                            padx=(16, 8), pady=12)
+        self.chat_input.bind("<Return>", lambda e: self._send_chat())
+        # 포커스 효과
+        input_card.bind("<Enter>", lambda e: input_card.config(
+            highlightbackground=c["accent"]))
+        input_card.bind("<Leave>", lambda e: input_card.config(
+            highlightbackground=c["input_border"]))
+
+        self.chat_send_btn = tk.Button(input_card, text="  전송  ",
+                                        font=(self.FONT, 10, "bold"),
+                                        bg=c["accent"], fg="#ffffff",
+                                        relief=tk.FLAT, padx=22, pady=8,
+                                        cursor="hand2",
+                                        activebackground=c["accent_hover"],
+                                        activeforeground="#ffffff",
+                                        borderwidth=0, highlightthickness=0,
+                                        command=self._send_chat)
+        self.chat_send_btn.pack(side=tk.RIGHT, padx=(0, 8), pady=8)
+
+    def _add_chat_system(self, text):
+        """시스템 메시지를 채팅에 표시."""
+        self.chat_display.configure(state=tk.NORMAL)
+        self.chat_display.insert(tk.END, f"{text}\n", "system_msg")
+        self.chat_display.configure(state=tk.DISABLED)
+        self.chat_display.see(tk.END)
+
+    def _add_chat_message(self, role, text):
+        """사용자/AI 메시지를 채팅에 표시."""
+        self.chat_display.configure(state=tk.NORMAL)
+
+        if role == "user":
+            self.chat_display.insert(tk.END, "\n나  ", "user_name")
+            self.chat_display.insert(tk.END, f"{text}\n", "user_msg")
+        else:
+            self.chat_display.insert(tk.END, "\nAI  ", "ai_name")
+            self.chat_display.insert(tk.END, f"{text}\n", "ai_msg")
+
+        self.chat_display.insert(tk.END,
+                                  "─" * 60 + "\n", "divider")
+        self.chat_display.configure(state=tk.DISABLED)
+        self.chat_display.see(tk.END)
+
+    def _send_quick_chat(self, question):
+        """빠른 질문 버튼 클릭."""
+        self.chat_input.delete(0, tk.END)
+        self.chat_input.insert(0, question)
+        self._send_chat()
+
+    def _send_chat(self):
+        """사용자 메시지를 전송하고 AI 응답을 받는다."""
+        msg = self.chat_input.get().strip()
+        if not msg:
+            return
+
+        self.chat_input.delete(0, tk.END)
+        self._add_chat_message("user", msg)
+        self._chat_messages.append(("user", msg))
+
+        # UI 비활성화
+        self.chat_send_btn.configure(state=tk.DISABLED, text="생각중...")
+
+        def _get_response():
+            try:
+                response = self._get_ai_response(msg)
+                self._chat_messages.append(("assistant", response))
+                self.root.after(0, lambda: self._add_chat_message("ai", response))
+            except Exception as e:
+                err = f"오류가 발생했습니다: {e}"
+                self.root.after(0, lambda: self._add_chat_message("ai", err))
+            finally:
+                self.root.after(0, lambda: self.chat_send_btn.configure(
+                    state=tk.NORMAL, text="전송"))
+
+        self._chat_thread = threading.Thread(target=_get_response, daemon=True)
+        self._chat_thread.start()
+
+    def _get_ai_response(self, user_msg: str) -> str:
+        """AI API를 호출하여 응답을 받는다."""
+        # 시스템 컨텍스트 구성
+        context = self._build_chat_context()
+
+        # OpenAI API 키 확인
+        api_key = self.settings.openai_api_key
+        if not api_key:
+            api_key = self.user_prefs.get("openai_api_key", "")
+        anthropic_key = self.user_prefs.get("anthropic_api_key", "")
+
+        if api_key:
+            return self._call_openai(api_key, context, user_msg)
+        elif anthropic_key:
+            return self._call_anthropic(anthropic_key, context, user_msg)
+        else:
+            return self._rule_based_response(user_msg, context)
+
+    def _build_chat_context(self) -> str:
+        """현재 시스템 상태를 요약한 컨텍스트를 구성한다."""
+        lines = ["당신은 OSHMS 주식 자동매매 시스템의 AI 어시스턴트입니다.",
+                 "한국어로 답변하세요. 간결하고 실용적인 조언을 제공하세요.",
+                 "",
+                 "=== 시스템 상태 ==="]
+
+        # 설정 정보
+        lines.append(f"모드: {'모의투자' if self.settings.is_mock else '실전투자'}")
+        lines.append(f"최대 매수금액: {self.settings.max_buy_amount:,}원")
+        lines.append(f"최대 보유종목: {self.settings.max_hold_count}개")
+        lines.append(f"손절: {self.settings.stop_loss_pct}% / 익절: {self.settings.take_profit_pct}%")
+        lines.append(f"매매시간: {self.settings.trading_start_time}~{self.settings.trading_end_time}")
+
+        # 거래 기록
+        trade_file = Path("logs/trades.json")
+        if trade_file.exists():
+            try:
+                data = json.loads(trade_file.read_text(encoding="utf-8"))
+                recent = data[-10:]
+                total_pl = sum(t.get("profit_loss", 0) for t in data if t.get("side") == "SELL")
+                wins = sum(1 for t in data if t.get("side") == "SELL" and t.get("profit_loss", 0) > 0)
+                sells = sum(1 for t in data if t.get("side") == "SELL")
+                wr = (wins / sells * 100) if sells > 0 else 0
+                lines.append(f"\n총 거래: {len(data)}건 | 매도: {sells}건 | 승률: {wr:.1f}%")
+                lines.append(f"누적 손익: {total_pl:+,}원")
+                if recent:
+                    lines.append("\n최근 거래:")
+                    for t in recent[-5:]:
+                        pl = f" → {t['profit_loss']:+,}원" if t.get("side") == "SELL" else ""
+                        lines.append(f"  {t.get('timestamp','')[:16]} {t.get('side','')} "
+                                    f"{t.get('stock_name','')} {t.get('quantity',0)}주{pl}")
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # 진화 상태
+        evo_file = Path("data/evolution_state.json")
+        if evo_file.exists():
+            try:
+                evo = json.loads(evo_file.read_text(encoding="utf-8"))
+                lines.append(f"\n진화 세대: #{evo.get('generation', 0)}")
+                lines.append(f"최고 적합도: {evo.get('best_fitness', 0):.1f}")
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        return "\n".join(lines)
+
+    def _call_openai(self, api_key: str, context: str, user_msg: str) -> str:
+        """OpenAI API 호출."""
+        try:
+            from openai import OpenAI
+        except ImportError:
+            try:
+                import subprocess, sys
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", "openai"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                from openai import OpenAI
+            except Exception:
+                return ("openai 패키지가 설치되어 있지 않습니다.\n\n"
+                        "터미널에서 다음 명령어를 실행해주세요:\n"
+                        "  pip install openai")
+        try:
+            client = OpenAI(api_key=api_key)
+
+            messages = [{"role": "system", "content": context}]
+            # 최근 대화 히스토리 (마지막 10개)
+            for role, content in self._chat_messages[-10:]:
+                messages.append({"role": role, "content": content})
+
+            resp = client.chat.completions.create(
+                model=self.settings.openai_model or "gpt-4o-mini",
+                messages=messages,
+                max_tokens=1000,
+                temperature=0.7,
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            return f"OpenAI API 오류: {e}\n\n설정에서 API 키를 확인해주세요."
+
+    def _call_anthropic(self, api_key: str, context: str, user_msg: str) -> str:
+        """Anthropic API 호출."""
+        try:
+            import anthropic
+        except ImportError:
+            # 자동 설치 시도
+            try:
+                import subprocess, sys
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", "anthropic"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                import anthropic
+            except Exception:
+                return ("anthropic 패키지가 설치되어 있지 않습니다.\n\n"
+                        "터미널에서 다음 명령어를 실행해주세요:\n"
+                        "  pip install anthropic\n\n"
+                        "또는 설정에서 OpenAI API 키를 사용하시면 별도 설치 없이 이용 가능합니다.")
+        try:
+            client = anthropic.Anthropic(api_key=api_key)
+
+            messages = []
+            for role, content in self._chat_messages[-10:]:
+                messages.append({"role": role, "content": content})
+
+            resp = client.messages.create(
+                model="claude-opus-4-7",
+                max_tokens=1000,
+                system=context,
+                messages=messages,
+            )
+            return resp.content[0].text.strip()
+        except Exception as e:
+            err = str(e)
+            if "credit balance" in err.lower() or "billing" in err.lower():
+                return ("Anthropic API 크레딧이 부족합니다.\n\n"
+                        "해결 방법:\n"
+                        "1. console.anthropic.com → Plans & Billing에서 크레딧 충전\n"
+                        "2. 또는 설정에서 OpenAI API 키를 입력하여 사용\n\n"
+                        "OpenAI API 키는 platform.openai.com에서 발급받을 수 있습니다.")
+            if "invalid" in err.lower() and "api" in err.lower():
+                return ("Anthropic API 키가 유효하지 않습니다.\n\n"
+                        "설정에서 API 키를 확인해주세요.\n"
+                        "console.anthropic.com → API Keys에서 확인 가능합니다.")
+            return f"Anthropic API 오류: {e}"
+
+    def _rule_based_response(self, msg: str, context: str) -> str:
+        """API 키가 없을 때 규칙 기반 응답."""
+        msg_lower = msg.lower()
+
+        if "포트폴리오" in msg or "잔고" in msg or "보유" in msg:
+            return ("포트폴리오 분석을 위해서는 먼저 대시보드의 '새로고침' 버튼으로 "
+                    "잔고를 갱신해주세요.\n\n"
+                    "더 상세한 AI 분석을 원하시면 설정에서 OpenAI API 키를 입력하세요.\n"
+                    "OpenAI API 키는 platform.openai.com에서 발급받을 수 있습니다.")
+
+        if "시장" in msg or "전망" in msg or "오늘" in msg:
+            return ("실시간 시장 분석은 AI API가 필요합니다.\n\n"
+                    "현재 시스템 전략 설정:\n"
+                    f"• 손절: {self.settings.stop_loss_pct}%\n"
+                    f"• 익절: {self.settings.take_profit_pct}%\n"
+                    f"• 최대 보유: {self.settings.max_hold_count}종목\n\n"
+                    "AI 기능을 활성화하려면 설정에서 OpenAI 또는 Anthropic API 키를 입력하세요.")
+
+        if "전략" in msg or "추천" in msg or "어떻게" in msg:
+            return ("현재 OSHMS는 Expert 전략을 사용 중입니다.\n\n"
+                    "Expert 전략 구성:\n"
+                    "• 기술적 분석 40% (추세, MACD, RSI, 볼린저)\n"
+                    "• 가격위치 분석 20% (지지/저항, VWAP)\n"
+                    "• 시장환경 15% (KOSPI/KOSDAQ 레짐)\n"
+                    "• 캔들 패턴 15% (망치형, 장악형 등)\n"
+                    "• 뉴스 감성 10% (네이버 뉴스 분석)\n\n"
+                    "더 정교한 전략 조언은 OpenAI API 키를 설정하면 가능합니다.")
+
+        if "리스크" in msg or "손절" in msg or "위험" in msg:
+            return (f"현재 리스크 설정:\n"
+                    f"• 손절: {self.settings.stop_loss_pct}% (ATR 기반 동적 조절)\n"
+                    f"• 익절: {self.settings.take_profit_pct}% (ATR 기반 동적 조절)\n"
+                    f"• 트레일링 스탑: 수익률 구간별 차등 (1.5~2.5%)\n"
+                    f"• 장마감 자동 청산: 15:15\n"
+                    f"• 손절 후 쿨다운: 10분\n\n"
+                    f"1회 최대 매수: {self.settings.max_buy_amount:,}원\n"
+                    f"최대 보유: {self.settings.max_hold_count}종목")
+
+        return ("AI 어시스턴트를 사용하려면 설정에서 API 키를 입력해주세요.\n\n"
+                "지원 API:\n"
+                "• OpenAI (GPT-4o) - platform.openai.com\n"
+                "• Anthropic (Claude) - console.anthropic.com\n\n"
+                "위 버튼들로 빠른 질문도 가능합니다.")
+
+    # ═══════════════════════════════════════════════
+    # 설정 탭
+    # ═══════════════════════════════════════════════
+
+    def _build_settings_tab(self):
+        frame = tk.Frame(self.notebook, bg=self.c["bg"])
+        self.notebook.add(frame, text="   설정   ")
+        inner, self._settings_canvas = self._make_scroll_frame(frame)
+        c = self.c
+
+        self.setting_vars = {}
+
+        self._add_settings_section(inner, "한국투자증권 API")
+        self._add_field(inner, "APP Key", "app_key", show="*")
+        self._add_field(inner, "APP Secret", "app_secret", show="*")
+        self._add_field(inner, "계좌번호 (예: 12345678-01)", "account_no")
+        self._add_checkbox(inner, "모의투자 모드", "is_mock")
+
+        self._add_settings_section(inner, "매매 설정")
+        self._add_field(inner, "시작 자본금 (원)", "initial_capital")
+        self._add_field(inner, "1회 최대 매수금액 (원)", "max_buy_amount")
+        self._add_field(inner, "최대 보유 종목 수", "max_hold_count")
+        self._add_field(inner, "손절 비율 (%)", "stop_loss_pct")
+        self._add_field(inner, "익절 비율 (%)", "take_profit_pct")
+        self._add_field(inner, "매매 시작 시간 (HH:MM)", "trading_start_time")
+        self._add_field(inner, "매매 종료 시간 (HH:MM)", "trading_end_time")
+
+        self._add_settings_section(inner, "AI 분석 설정")
+        self._add_field(inner, "OpenAI API Key", "openai_api_key", show="*")
+        self._add_field(inner, "Anthropic API Key", "anthropic_api_key", show="*")
+        tk.Label(inner,
+                 text="  API 키 없어도 규칙 기반 AI 분석이 자동으로 사용됩니다.",
+                 font=(self.FONT, 9), bg=c["bg"], fg=c["dim"]
+                 ).pack(anchor=tk.W, padx=36, pady=(0, 6))
+
+        self._add_settings_section(inner, "네이버 검색 API (선택)")
+        self._add_field(inner, "Client ID", "naver_client_id")
+        self._add_field(inner, "Client Secret", "naver_client_secret", show="*")
+
+        self._add_settings_section(inner, "자가 학습 / 자동 진화")
+        self._add_checkbox(inner, "자동 전략 최적화 활성화", "auto_optimize")
+        self._add_checkbox(inner, "자동 진화 활성화", "auto_evolve")
+        self._add_field(inner, "학습 주기 (거래 건수)", "learn_interval")
+
+        # 구분선
+        tk.Frame(inner, bg=c["border"], height=1).pack(fill=tk.X, padx=28, pady=(20, 0))
+
+        # 저장/검증 버튼
+        btn_f = tk.Frame(inner, bg=c["bg"])
+        btn_f.pack(fill=tk.X, padx=32, pady=(24, 36))
+        self.save_btn = self._make_button(btn_f, "  저장  ",
+                                          self._save_settings, c["green_dim"])
+        self.save_btn.configure(font=(self.FONT, 12, "bold"), padx=32, pady=12)
+        self.save_btn.pack(side=tk.LEFT, padx=(0, 14))
+        self.validate_btn = self._make_button(btn_f, "  검증  ",
+                                              self._validate_settings,
+                                              c["surface"])
+        self.validate_btn.configure(fg=c["fg"], font=(self.FONT, 11, "bold"),
+                                    padx=24, pady=10)
+        self.validate_btn.pack(side=tk.LEFT)
+
+    def _add_settings_section(self, parent, title):
+        c = self.c
+        f = tk.Frame(parent, bg=c["bg"])
+        f.pack(fill=tk.X, padx=28, pady=(24, 8))
+        # 왼쪽 액센트 바
+        bar = tk.Frame(f, bg=c["accent"], width=3, height=18)
+        bar.pack(side=tk.LEFT, padx=(0, 10))
+        bar.pack_propagate(False)
+        tk.Label(f, text=title, font=(self.FONT, 12, "bold"),
+                 bg=c["bg"], fg=c["fg"]).pack(side=tk.LEFT)
+        sep = tk.Frame(f, bg=c["border"], height=1)
+        sep.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(16, 0), pady=1)
+
+    def _add_field(self, parent, label, key, show=""):
+        c = self.c
+        f = tk.Frame(parent, bg=c["bg"])
+        f.pack(fill=tk.X, padx=36, pady=4)
+        tk.Label(f, text=label, font=(self.FONT, 10), bg=c["bg"],
+                 fg=c["fg2"], width=28, anchor=tk.W).pack(side=tk.LEFT)
+        var = tk.StringVar()
+        self._make_entry(f, var=var, width=35, show=show).pack(side=tk.LEFT, padx=(10, 0))
+        self.setting_vars[key] = var
+
+    def _add_checkbox(self, parent, label, key):
+        c = self.c
+        var = tk.BooleanVar()
+        cb = tk.Checkbutton(parent, text=label, variable=var,
+                            font=(self.FONT, 10),
+                            bg=c["bg"], fg=c["fg2"],
+                            selectcolor=c["accent_soft"],
+                            activebackground=c["bg"],
+                            activeforeground=c["fg"])
+        cb.pack(anchor=tk.W, padx=36, pady=4)
+        self.setting_vars[key] = var
+
+    # ═══════════════════════════════════════════════
+    # 테마 적용
+    # ═══════════════════════════════════════════════
+
+    def _apply_theme(self):
+        c = self.c
+        style = ttk.Style()
+        style.theme_use("clam")
+
+        # ─── 노트북 탭 (넉넉한 패딩, 선명한 선택 표시) ───
+        style.configure("TNotebook", background=c["bg"], borderwidth=0,
+                        tabmargins=[0, 0, 0, 0])
+        style.configure("TNotebook.Tab",
+                        background=c["bg2"], foreground=c["dim"],
+                        padding=[28, 12],
+                        font=(self.FONT, 10, "bold"))
+        style.map("TNotebook.Tab",
+                  background=[("selected", c["surface"]), ("active", c["card"])],
+                  foreground=[("selected", c["accent"]), ("active", c["fg"])],
+                  padding=[("selected", [28, 13])])
+        style.layout("TNotebook.Tab", [
+            ("Notebook.tab", {"sticky": "nswe", "children": [
+                ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
+                    ("Notebook.label", {"side": "top", "sticky": ""})
+                ]})
+            ]})
+        ])
+
+        # ─── 트리뷰 (Bloomberg 스타일 테이블) ───
+        style.configure("Treeview",
+                        background=c["bg2"], foreground=c["fg"],
+                        fieldbackground=c["bg2"], borderwidth=0,
+                        font=(self.FONT, 10), rowheight=36)
+        style.configure("Treeview.Heading",
+                        background=c["surface"], foreground=c["fg2"],
+                        font=(self.FONT, 9, "bold"), borderwidth=0,
+                        relief=tk.FLAT, padding=[8, 6])
+        style.map("Treeview",
+                  background=[("selected", c["accent_soft"])],
+                  foreground=[("selected", c["accent"])])
+        style.map("Treeview.Heading",
+                  background=[("active", c["card"])])
+
+        # ─── 콤보박스 (깔끔한 드롭다운) ───
+        style.configure("TCombobox",
+                        fieldbackground=c["input_bg"],
+                        background=c["surface"], foreground=c["fg"],
+                        arrowcolor=c["accent"],
+                        borderwidth=1,
+                        padding=7)
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", c["input_bg"])],
+                  foreground=[("readonly", c["fg"])],
+                  selectbackground=[("readonly", c["accent_soft"])])
+
+        # 콤보박스 드롭다운 리스트 색상 (Tk 옵션)
+        self.root.option_add("*TCombobox*Listbox.background", c["surface"])
+        self.root.option_add("*TCombobox*Listbox.foreground", c["fg"])
+        self.root.option_add("*TCombobox*Listbox.selectBackground", c["accent_soft"])
+        self.root.option_add("*TCombobox*Listbox.selectForeground", c["accent"])
+        self.root.option_add("*TCombobox*Listbox.font", (self.FONT, 10))
+
+        # ─── 스크롤바 (슬림 6px) ───
+        style.configure("Vertical.TScrollbar",
+                        background=c["surface"],
+                        troughcolor=c["bg"], borderwidth=0,
+                        arrowcolor=c["dim2"], width=6)
+        style.map("Vertical.TScrollbar",
+                  background=[("active", c["accent_soft"]),
+                              ("pressed", c["accent"])])
+
+        # ─── 체크버튼 ───
+        style.configure("TCheckbutton",
+                        background=c["bg"],
+                        foreground=c["fg"])
+
+        # ─── 프레임 ───
+        style.configure("TFrame", background=c["bg"])
+
+    # ═══════════════════════════════════════════════
+    # 진화 상세
+    # ═══════════════════════════════════════════════
+
+    def _load_evolution_details(self):
+        """진화 엔진 상태를 상세히 표시한다."""
+        self.evo_detail_text.configure(state=tk.NORMAL)
+        self.evo_detail_text.delete("1.0", tk.END)
+
+        evo_file = Path("data/evolution_state.json")
+        if not evo_file.exists():
+            self.evo_detail_text.insert(tk.END,
+                "진화 엔진 대기중\n\n"
+                "진화 엔진은 거래가 쌓이면 자동으로 작동합니다.\n"
+                "매 15건 거래마다 진화 사이클이 실행됩니다.\n\n"
+                "진화 과정:\n"
+                " 1. 거래 패턴 학습 → 인사이트 발견\n"
+                " 2. 매매 규칙 자동 생성/업데이트\n"
+                " 3. 지표별 가중치 성과 기반 조정\n"
+                " 4. 전략 파라미터 백테스트 최적화\n"
+                " 5. 적합도(fitness) 평가 → 세대 기록")
+        else:
+            try:
+                data = json.loads(evo_file.read_text(encoding="utf-8"))
+                gen = data.get("generation", 0)
+                best = data.get("best_fitness", 0)
+                best_gen = data.get("best_generation", 0)
+                last = data.get("last_evolution", "없음")
+                rules = data.get("active_rules", [])
+                fh = data.get("fitness_history", [])
+                wh = data.get("weight_history", [])
+
+                txt = f"세대: #{gen}  |  최고 적합도: {best:.1f} (#{best_gen})  |  마지막: {last}\n"
+                txt += f"활성 규칙: {len(rules)}개  |  가중치 조정 이력: {len(wh)}건\n\n"
+
+                if fh:
+                    recent = fh[-5:]
+                    txt += "최근 적합도 추이:\n"
+                    for f in recent:
+                        bar_len = int(f["fitness"] / 5)
+                        bar = "█" * bar_len + "░" * (20 - bar_len)
+                        txt += f"  #{f['generation']:3d}  {bar}  {f['fitness']:5.1f}\n"
+
+                if rules:
+                    txt += f"\n활성 규칙 ({len(rules)}개):\n"
+                    for r in rules[:5]:
+                        conf = r.get("confidence", 0)
+                        txt += f"  [{r.get('type','')}] {r.get('action','')} (신뢰도: {conf:.0%})\n"
+                    if len(rules) > 5:
+                        txt += f"  ... 외 {len(rules) - 5}개\n"
+
+                self.evo_detail_text.insert(tk.END, txt)
+            except Exception:
+                self.evo_detail_text.insert(tk.END, "진화 상태 로드 실패")
+
+        self.evo_detail_text.configure(state=tk.DISABLED)
+
+    def _load_code_evolution_details(self):
+        """코드 자체 진화 엔진 상태를 표시한다."""
+        self.code_evo_text.configure(state=tk.NORMAL)
+        self.code_evo_text.delete("1.0", tk.END)
+
+        state_file = Path("data/code_evolution_state.json")
+        if not state_file.exists():
+            self.code_evo_text.insert(tk.END,
+                "코드 자체 진화 엔진 대기중\n\n"
+                "프로그램이 스스로 약점을 파악하고 개선하는 메타 진화 시스템입니다.\n"
+                "매매가 진행되면 자동으로 작동합니다.\n\n"
+                "진화 계층:\n"
+                " Level 0: 파라미터 튜닝 (가중치, 임계값)\n"
+                " Level 1: 전략 로직 진화 (매매 규칙 생성/조합)\n"
+                " Level 2: 기능 진화 (필터/모듈 활성화)\n"
+                " Level 3: 아키텍처 진화 (전략 블렌딩, 앙상블)\n\n"
+                "자율 진화 사이클:\n"
+                " 1. 성능 진단 → 약점 식별\n"
+                " 2. 진화 모듈 우선순위 결정\n"
+                " 3. 변경 생성 → 검증 → 적용\n"
+                " 4. 성과 모니터링 → 롤백/유지")
+        else:
+            try:
+                data = json.loads(state_file.read_text(encoding="utf-8"))
+                cycle = data.get("cycle", 0)
+                improvements = data.get("total_improvements", 0)
+                rollbacks = data.get("total_rollbacks", 0)
+                last = data.get("last_cycle", "없음")
+                diag = data.get("last_diagnosis", {})
+                score = diag.get("overall_score", 0)
+                roadmap = data.get("roadmap", [])
+                applied = data.get("applied_modules", [])
+                perf = data.get("performance_history", [])
+
+                txt = f"사이클: #{cycle}  |  개선: {improvements}건  |  롤백: {rollbacks}건  |  마지막: {last}\n"
+                txt += f"시스템 점수: {score:.1f}/100\n\n"
+
+                # 성능 추이
+                if perf:
+                    recent = perf[-5:]
+                    txt += "성능 추이:\n"
+                    for p in recent:
+                        s = p.get("score", 0)
+                        bar_len = int(min(s, 100) / 5)
+                        bar = "█" * bar_len + "░" * (20 - bar_len)
+                        txt += f"  #{p.get('cycle', 0):3d}  {bar}  {s:5.1f}\n"
+                    txt += "\n"
+
+                # 약점 목록
+                weaknesses = diag.get("weaknesses", [])
+                if weaknesses:
+                    txt += f"발견된 약점 ({len(weaknesses)}개):\n"
+                    for w in weaknesses[:5]:
+                        sev_icon = {"critical": "!!", "high": "! ", "medium": "- ", "low": "  "}.get(
+                            w.get("severity", ""), "  ")
+                        txt += f"  {sev_icon}{w.get('detail', '')}\n"
+                    txt += "\n"
+
+                # 개발 로드맵
+                active_roadmap = sorted(roadmap, key=lambda m: m.get("priority", 0), reverse=True)
+                if active_roadmap:
+                    txt += "자율 개발 로드맵:\n"
+                    for m in active_roadmap[:6]:
+                        status_icon = {"pending": "◻", "cooldown": "⏳", "applied": "✓"}.get(
+                            m.get("status", ""), "◻")
+                        pri = m.get("priority", 0)
+                        txt += f"  {status_icon} [{pri:4.1f}] {m.get('name', '')}\n"
+                    if len(active_roadmap) > 6:
+                        txt += f"  ... 외 {len(active_roadmap) - 6}개\n"
+                    txt += "\n"
+
+                # 최근 적용 모듈
+                if applied:
+                    txt += f"최근 적용 ({len(applied)}건):\n"
+                    for a in applied[-3:]:
+                        txt += f"  #{a.get('cycle', 0)} {a.get('module_id', '')} — {a.get('reason', '')}\n"
+
+                self.code_evo_text.insert(tk.END, txt)
+            except Exception:
+                self.code_evo_text.insert(tk.END, "코드 진화 상태 로드 실패")
+
+        self.code_evo_text.configure(state=tk.DISABLED)
+
+    # ═══════════════════════════════════════════════
+    # 설정 로드/저장
+    # ═══════════════════════════════════════════════
+
+    def _load_user_prefs(self) -> dict:
+        if self.SETTINGS_FILE.exists():
+            try:
+                return json.loads(self.SETTINGS_FILE.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def _load_settings_to_ui(self):
+        mapping = {
+            "app_key": self.settings.app_key,
+            "app_secret": self.settings.app_secret,
+            "account_no": self.settings.account_no,
+            "initial_capital": str(self.settings.initial_capital),
+            "max_buy_amount": str(self.settings.max_buy_amount),
+            "max_hold_count": str(self.settings.max_hold_count),
+            "stop_loss_pct": str(self.settings.stop_loss_pct),
+            "take_profit_pct": str(self.settings.take_profit_pct),
+            "trading_start_time": self.settings.trading_start_time,
+            "trading_end_time": self.settings.trading_end_time,
+            "naver_client_id": self.user_prefs.get("naver_client_id", ""),
+            "naver_client_secret": self.user_prefs.get("naver_client_secret", ""),
+            "openai_api_key": self.settings.openai_api_key,
+            "anthropic_api_key": self.user_prefs.get("anthropic_api_key", ""),
+            "learn_interval": str(self.user_prefs.get("learn_interval", 20)),
+        }
+        for key, val in mapping.items():
+            if key in self.setting_vars and isinstance(self.setting_vars[key], tk.StringVar):
+                self.setting_vars[key].set(val)
+        if "is_mock" in self.setting_vars:
+            self.setting_vars["is_mock"].set(self.settings.is_mock)
+        if "auto_optimize" in self.setting_vars:
+            self.setting_vars["auto_optimize"].set(self.user_prefs.get("auto_optimize", True))
+        if "auto_evolve" in self.setting_vars:
+            self.setting_vars["auto_evolve"].set(self.user_prefs.get("auto_evolve", True))
+
+    def _load_state_to_dashboard(self):
+        try:
+            from trading.state_manager import StateManager
+            self._state_mgr = StateManager()
+
+            resume = self._state_mgr.get_resume_info()
+            if resume["last_active"]:
+                self.resume_label.config(
+                    text=f"이전: {resume['strategy']} ({resume['market']}) | {resume['last_active']}")
+                self.resume_btn.pack(side=tk.LEFT, padx=10)
+
+            # StateManager 누적 통계는 stat_labels(누적 통계 섹션)에서 표시
+            # card_labels는 실시간 잔고 데이터용이므로 여기서 덮어쓰지 않음
+        except Exception:
+            pass
+
+        # 무거운 파일 I/O를 백그라운드에서 처리
+        threading.Thread(target=self._bg_update_stats, daemon=True).start()
+
+    def _update_cumulative_stats(self):
+        """누적 통계를 계산한다. trades.json + StateManager 병합."""
+        total_sells = 0
+        wins = 0
+        total_profit = 0
+        best = 0
+        win_rate = 0.0
+
+        # 1차: trades.json에서 직접 계산
+        trade_file = Path("logs/trades.json")
+        if trade_file.exists():
+            try:
+                data = json.loads(trade_file.read_text(encoding="utf-8"))
+                sells = [t for t in data if t.get("side") == "SELL"]
+                if sells:
+                    total_sells = len(sells)
+                    wins = sum(1 for t in sells if t.get("profit_loss", 0) > 0)
+                    total_profit = sum(t.get("profit_loss", 0) for t in sells)
+                    profits = [t.get("profit_loss", 0) for t in sells]
+                    best = max(profits) if profits else 0
+                    win_rate = (wins / total_sells * 100) if total_sells > 0 else 0
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # 2차: StateManager 누적 통계가 더 정확하면 병합
+        try:
+            from trading.state_manager import StateManager
+            sm = StateManager()
+            stats = sm.get_stats_summary()
+            if stats.get("total_trades", 0) > total_sells:
+                total_sells = stats["total_trades"]
+                win_rate = stats.get("win_rate", win_rate)
+                total_profit = stats.get("total_profit", total_profit)
+        except Exception:
+            pass
+
+        c = self.c
+        self.stat_labels["cum_trades"].config(text=f"{total_sells} 건")
+        self.stat_labels["cum_wins"].config(
+            text=f"{win_rate:.1f}%",
+            fg=c["green"] if win_rate >= 50 else c["red"])
+        self.stat_labels["cum_profit"].config(
+            text=f"{total_profit:+,.0f} 원",
+            fg=c["green"] if total_profit >= 0 else c["red"])
+        self.stat_labels["best_trade"].config(
+            text=f"{best:+,.0f} 원")
+
+        # 진화 세대 표시 (통계 카드 + 헤더 동시 갱신)
+        evo_file = Path("data/evolution_state.json")
+        if evo_file.exists():
+            try:
+                evo = json.loads(evo_file.read_text(encoding="utf-8"))
+                gen = evo.get("generation", 0)
+                best_fit = evo.get("best_fitness", 0)
+                self.stat_labels["evo_gen"].config(text=f"#{gen}")
+                self.evo_label.config(
+                    text=f"진화 #{gen}  적합도 {best_fit:.0f}")
+            except Exception:
+                pass
+        else:
+            self.stat_labels["evo_gen"].config(text="#0")
+            self.evo_label.config(text="진화 #0  대기")
+
+    def _load_trade_history(self):
+        trade_file = Path("logs/trades.json")
+        if not trade_file.exists():
+            return
+        try:
+            data = json.loads(trade_file.read_text(encoding="utf-8"))
+            for item in self.trades_tree.get_children():
+                self.trades_tree.delete(item)
+            today_count = 0
+            from datetime import datetime
+            today = datetime.now().strftime("%Y-%m-%d")
+            for t in data[-30:]:
+                ts = t.get("timestamp", "")[:16]
+                self.trades_tree.insert("", 0, values=(
+                    ts, t.get("stock_name", ""), t.get("side", ""),
+                    t.get("quantity", 0), f"{t.get('price', 0):,}",
+                    f"{t.get('profit_loss', 0):+,}" if t.get("side") == "SELL" else "-",
+                ))
+                if ts.startswith(today):
+                    today_count += 1
+            self.card_labels["today_trades"].config(text=f"{today_count} 건")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    def _save_settings(self):
+        # 자동매매 실행 중이면 경고
+        if self._is_trading:
+            proceed = messagebox.askyesno(
+                "경고",
+                "자동매매가 실행 중입니다.\n"
+                "설정 변경은 매매 재시작 후 적용됩니다.\n"
+                "그래도 저장하시겠습니까?")
+            if not proceed:
+                return
+
+        env_lines = [
+            f"KIS_APP_KEY={self.setting_vars['app_key'].get()}",
+            f"KIS_APP_SECRET={self.setting_vars['app_secret'].get()}",
+            f"KIS_ACCOUNT_NO={self.setting_vars['account_no'].get()}",
+            f"KIS_MOCK={'true' if self.setting_vars['is_mock'].get() else 'false'}",
+            f"INITIAL_CAPITAL={self.setting_vars['initial_capital'].get()}",
+            f"MAX_BUY_AMOUNT={self.setting_vars['max_buy_amount'].get()}",
+            f"MAX_HOLD_COUNT={self.setting_vars['max_hold_count'].get()}",
+            f"STOP_LOSS_PCT={self.setting_vars['stop_loss_pct'].get()}",
+            f"TAKE_PROFIT_PCT={self.setting_vars['take_profit_pct'].get()}",
+            f"TRADING_START_TIME={self.setting_vars['trading_start_time'].get()}",
+            f"TRADING_END_TIME={self.setting_vars['trading_end_time'].get()}",
+            f"NAVER_CLIENT_ID={self.setting_vars.get('naver_client_id', tk.StringVar()).get()}",
+            f"NAVER_CLIENT_SECRET={self.setting_vars.get('naver_client_secret', tk.StringVar()).get()}",
+            f"OPENAI_API_KEY={self.setting_vars.get('openai_api_key', tk.StringVar()).get()}",
+            f"ANTHROPIC_API_KEY={self.setting_vars.get('anthropic_api_key', tk.StringVar()).get()}",
+            f"LOG_LEVEL=INFO",
+        ]
+        Path(".env").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+
+        prefs = {
+            "auto_optimize": self.setting_vars.get("auto_optimize", tk.BooleanVar(value=True)).get(),
+            "auto_evolve": self.setting_vars.get("auto_evolve", tk.BooleanVar(value=True)).get(),
+            "learn_interval": self.setting_vars.get("learn_interval", tk.StringVar(value="20")).get(),
+            "naver_client_id": self.setting_vars.get("naver_client_id", tk.StringVar()).get(),
+            "naver_client_secret": self.setting_vars.get("naver_client_secret", tk.StringVar()).get(),
+            "anthropic_api_key": self.setting_vars.get("anthropic_api_key", tk.StringVar()).get(),
+        }
+        self.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self.SETTINGS_FILE.write_text(
+            json.dumps(prefs, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # v4.7: 제자리 갱신 — 새 객체로 바꿔치기하면 실행 중인 트레이더/주문관리자가
+        # 예전 Settings 참조를 계속 물고 있어서 설정 변경이 실제 매매에 반영 안 됨.
+        # reload_from_env()는 self의 필드만 수정하므로 모든 참조 홀더가 즉시 새 값을 봄.
+        self.settings.reload_from_env()
+
+        # 저장 전 검증 — .env가 v4.7 설계를 어기는 값이면 경고
+        errors = self.settings.validate()
+        if errors:
+            messagebox.showwarning(
+                "설정 경고",
+                "다음 항목이 설계 기준에 어긋납니다:\n\n" + "\n".join(f"• {e}" for e in errors))
+
+        self._reset_api()  # 설정 변경 시 API 재연결 (자격증명 갱신)
+        # 실행 중인 트레이더의 API 참조도 교체 (없으면 조용히 무시)
+        if self._trader is not None:
+            new_api = self._get_api()
+            try:
+                self._trader.api = new_api
+                if hasattr(self._trader, "order_manager"):
+                    self._trader.order_manager.api = new_api
+            except Exception:
+                pass
+
+        # 모드 뱃지 즉시 업데이트
+        c = self.c
+        mode_text = "MOCK" if self.settings.is_mock else "REAL"
+        mode_color = c["yellow"] if self.settings.is_mock else c["red"]
+        self.mode_label.config(text=mode_text, fg=mode_color)
+
+        mode_str = "모의투자" if self.settings.is_mock else "실전투자"
+        running_note = " (실행 중인 매매에 즉시 반영됨)" if self._is_trading else ""
+        messagebox.showinfo("설정", f"설정이 저장되었습니다.{running_note}\n투자 모드: {mode_str}")
+
+    def _validate_settings(self):
+        errors = self.settings.validate()
+        if errors:
+            messagebox.showwarning("설정 검증", "\n".join(errors))
+        else:
+            messagebox.showinfo("설정 검증", "모든 설정이 유효합니다.")
+
+    # ═══════════════════════════════════════════════
+    # 대시보드 액션
+    # ═══════════════════════════════════════════════
+
+    def _on_market_changed(self, _event=None):
+        code = self._get_market_code()
+        hours, has_ext = self.MARKET_HOURS.get(code, ("--", False))
+        ext = " + 시간외" if has_ext else ""
+        self.market_hours_lbl.config(text=f"{hours}{ext}")
+
+    def _get_market_code(self) -> str:
+        display = self.market_var.get()
+        for code, name in self.MARKETS.items():
+            if display == name:
+                return code
+        return "KR"
+
+    def _get_api(self):
+        """KISApi 인스턴스를 캐싱하여 반환 (토큰 재발급 방지)."""
+        if self._kis_api is None:
+            from api.kis_api import KISApi
+            self._kis_api = KISApi(self.settings)
+        return self._kis_api
+
+    def _reset_api(self):
+        """설정 변경 시 API 인스턴스 초기화."""
+        self._kis_api = None
+
+    def _refresh_balance(self):
+        errors = self.settings.validate()
+        if errors:
+            messagebox.showwarning("오류", "먼저 설정에서 API 키를 입력하세요.")
+            return
+
+        def _fetch():
+            try:
+                api = self._get_api()
+                balance = api.get_balance()
+                kr_holdings = balance.get("holdings", [])
+                for h in kr_holdings:
+                    h["market"] = "KR"
+                try:
+                    overseas = api.get_overseas_balance()
+                    os_holdings = overseas.get("holdings", [])
+                    kr_holdings.extend(os_holdings)
+                    kr_summary = balance.get("summary", {})
+                    os_summary = overseas.get("summary", {})
+                    kr_summary["total_profit_loss"] = (
+                        kr_summary.get("total_profit_loss", 0) +
+                        os_summary.get("total_profit_loss", 0))
+                except Exception:
+                    pass
+                balance["holdings"] = kr_holdings
+                # 트레이더 보유 종목에서 목표가/여력 정보 병합
+                if self._trader and hasattr(self._trader, "order_manager"):
+                    om = self._trader.order_manager
+                    for h in kr_holdings:
+                        pos = om.positions.get(h.get("stock_code", ""))
+                        if pos:
+                            h["target_price"] = pos.target_price
+                            h["estimated_upside"] = pos.estimated_upside
+                self.root.after(0, lambda: self._update_dashboard(balance))
+            except Exception as e:
+                err_msg = str(e)
+                self.root.after(0, lambda: messagebox.showerror("오류", err_msg))
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _update_dashboard(self, balance):
+        c = self.c
+        holdings = balance.get("holdings", [])
+        summary = balance.get("summary", {})
+        total_eval = summary.get("total_eval_amount", 0)
+        cash = summary.get("available_cash", 0)
+
+        # 총 자산 = 평가금액 + 현금
+        total_asset = total_eval + cash
+
+        # 초기 자본금 기반 총 손익 계산
+        initial = self.settings.initial_capital
+        total_pl = total_asset - initial
+        rate = (total_pl / initial * 100) if initial > 0 else 0
+
+        self.card_labels["total_asset"].config(text=f"{total_asset:,.0f} 원")
+        self.card_labels["total_profit"].config(
+            text=f"{total_pl:+,.0f} 원",
+            fg=c["green"] if total_pl >= 0 else c["red"])
+        self.card_labels["profit_rate"].config(
+            text=f"{rate:+.2f}%",
+            fg=c["green"] if rate >= 0 else c["red"])
+        self.card_labels["hold_count"].config(text=f"{len(holdings)} 개")
+        self.holdings_count_lbl.config(text=f"{len(holdings)} 종목")
+
+        for item in self.holdings_tree.get_children():
+            self.holdings_tree.delete(item)
+        for h in holdings:
+            target = h.get("target_price", 0)
+            upside = h.get("estimated_upside", 0)
+            target_str = f"{target:,.0f}" if target else "--"
+            upside_str = f"{upside:+.1f}%" if target else "--"
+            self.holdings_tree.insert("", tk.END, values=(
+                h["stock_name"], h["quantity"],
+                f"{h['avg_price']:,.0f}", f"{h['current_price']:,.0f}",
+                f"{h['profit_rate']:+.2f}%",
+                target_str, upside_str))
+
+        # 파일 I/O 작업을 백그라운드에서 처리 (UI 응답없음 방지)
+        threading.Thread(target=self._bg_update_stats, daemon=True).start()
+
+    def _bg_update_stats(self):
+        """백그라운드 스레드에서 파일 I/O 후 UI 갱신을 예약한다."""
+        try:
+            # ── 거래 내역 (trades.json) ──
+            trade_rows = []
+            today_count = 0
+            trade_file = Path("logs/trades.json")
+            if trade_file.exists():
+                data = json.loads(trade_file.read_text(encoding="utf-8"))
+                from datetime import datetime
+                today = datetime.now().strftime("%Y-%m-%d")
+                for t in data[-30:]:
+                    ts = t.get("timestamp", "")[:16]
+                    trade_rows.append((
+                        ts, t.get("stock_name", ""), t.get("side", ""),
+                        t.get("quantity", 0), f"{t.get('price', 0):,}",
+                        f"{t.get('profit_loss', 0):+,}" if t.get("side") == "SELL" else "-",
+                    ))
+                    if ts.startswith(today):
+                        today_count += 1
+
+                # 누적 통계 계산
+                sells = [t for t in data if t.get("side") == "SELL"]
+                total_sells = len(sells)
+                wins = sum(1 for t in sells if t.get("profit_loss", 0) > 0)
+                total_profit = sum(t.get("profit_loss", 0) for t in sells)
+                profits = [t.get("profit_loss", 0) for t in sells]
+                best = max(profits) if profits else 0
+                win_rate = (wins / total_sells * 100) if total_sells > 0 else 0
+            else:
+                total_sells = wins = 0
+                total_profit = best = 0
+                win_rate = 0.0
+
+            # StateManager 병합
+            try:
+                from trading.state_manager import StateManager
+                sm = StateManager()
+                stats = sm.get_stats_summary()
+                if stats.get("total_trades", 0) > total_sells:
+                    total_sells = stats["total_trades"]
+                    win_rate = stats.get("win_rate", win_rate)
+                    total_profit = stats.get("total_profit", total_profit)
+            except Exception:
+                pass
+
+            cum_stats = {
+                "total_sells": total_sells, "win_rate": win_rate,
+                "total_profit": total_profit, "best": best,
+            }
+
+            # ── 진화 상태 ──
+            evo_gen = 0
+            evo_best_fit = 0
+            evo_text = ""
+            evo_file = Path("data/evolution_state.json")
+            if evo_file.exists():
+                try:
+                    evo_data = json.loads(evo_file.read_text(encoding="utf-8"))
+                    evo_gen = evo_data.get("generation", 0)
+                    evo_best_fit = evo_data.get("best_fitness", 0)
+                    evo_text = self._format_evolution_text(evo_data)
+                except Exception:
+                    evo_text = "진화 상태 로드 실패"
+
+            # ── 코드 진화 상태 ──
+            code_evo_text = ""
+            code_evo_file = Path("data/code_evolution_state.json")
+            if code_evo_file.exists():
+                try:
+                    code_data = json.loads(code_evo_file.read_text(encoding="utf-8"))
+                    code_evo_text = self._format_code_evolution_text(code_data)
+                except Exception:
+                    code_evo_text = "코드 진화 상태 로드 실패"
+
+            # 메인 스레드에서 UI 갱신
+            self.root.after(0, lambda: self._apply_stats_to_ui(
+                trade_rows, today_count, cum_stats,
+                evo_gen, evo_best_fit, evo_text, code_evo_text))
+        except Exception:
+            pass
+
+    def _apply_stats_to_ui(self, trade_rows, today_count, cum,
+                           evo_gen, evo_best_fit, evo_text, code_evo_text):
+        """메인 스레드: 미리 계산된 데이터로 UI만 갱신."""
+        c = self.c
+
+        # 거래 내역 갱신
+        for item in self.trades_tree.get_children():
+            self.trades_tree.delete(item)
+        for row in trade_rows:
+            self.trades_tree.insert("", 0, values=row)
+        self.card_labels["today_trades"].config(text=f"{today_count} 건")
+
+        # 누적 통계
+        self.stat_labels["cum_trades"].config(text=f"{cum['total_sells']} 건")
+        self.stat_labels["cum_wins"].config(
+            text=f"{cum['win_rate']:.1f}%",
+            fg=c["green"] if cum["win_rate"] >= 50 else c["red"])
+        self.stat_labels["cum_profit"].config(
+            text=f"{cum['total_profit']:+,.0f} 원",
+            fg=c["green"] if cum["total_profit"] >= 0 else c["red"])
+        self.stat_labels["best_trade"].config(
+            text=f"{cum['best']:+,.0f} 원")
+
+        # 진화 세대
+        self.stat_labels["evo_gen"].config(text=f"#{evo_gen}")
+        if evo_gen > 0:
+            self.evo_label.config(text=f"진화 #{evo_gen}  적합도 {evo_best_fit:.0f}")
+        else:
+            self.evo_label.config(text="진화 #0  대기")
+
+        # 진화 엔진 상세
+        if evo_text:
+            self.evo_detail_text.configure(state=tk.NORMAL)
+            self.evo_detail_text.delete("1.0", tk.END)
+            self.evo_detail_text.insert(tk.END, evo_text)
+            self.evo_detail_text.configure(state=tk.DISABLED)
+
+        # 코드 진화 상세
+        if code_evo_text:
+            self.code_evo_text.configure(state=tk.NORMAL)
+            self.code_evo_text.delete("1.0", tk.END)
+            self.code_evo_text.insert(tk.END, code_evo_text)
+            self.code_evo_text.configure(state=tk.DISABLED)
+
+    def _format_evolution_text(self, data) -> str:
+        """진화 엔진 텍스트를 포맷한다 (스레드 안전)."""
+        gen = data.get("generation", 0)
+        best = data.get("best_fitness", 0)
+        best_gen = data.get("best_generation", 0)
+        last = data.get("last_evolution", "없음")
+        rules = data.get("active_rules", [])
+        fh = data.get("fitness_history", [])
+        wh = data.get("weight_history", [])
+
+        txt = f"세대: #{gen}  |  최고 적합도: {best:.1f} (#{best_gen})  |  마지막: {last}\n"
+        txt += f"활성 규칙: {len(rules)}개  |  가중치 조정 이력: {len(wh)}건\n\n"
+
+        if fh:
+            recent = fh[-5:]
+            txt += "최근 적합도 추이:\n"
+            for f in recent:
+                bar_len = int(f["fitness"] / 5)
+                bar = "█" * bar_len + "░" * (20 - bar_len)
+                txt += f"  #{f['generation']:3d}  {bar}  {f['fitness']:5.1f}\n"
+
+        if rules:
+            txt += f"\n활성 규칙 ({len(rules)}개):\n"
+            for r in rules[:5]:
+                conf = r.get("confidence", 0)
+                txt += f"  [{r.get('type','')}] {r.get('action','')} (신뢰도: {conf:.0%})\n"
+            if len(rules) > 5:
+                txt += f"  ... 외 {len(rules) - 5}개\n"
+        return txt
+
+    def _format_code_evolution_text(self, data) -> str:
+        """코드 자체 진화 텍스트를 포맷한다 (스레드 안전)."""
+        cycle = data.get("cycle", 0)
+        improvements = data.get("total_improvements", 0)
+        rollbacks = data.get("total_rollbacks", 0)
+        last = data.get("last_cycle", "없음")
+        diag = data.get("last_diagnosis", {})
+        score = diag.get("overall_score", 0)
+        roadmap = data.get("roadmap", [])
+        applied = data.get("applied_modules", [])
+        perf = data.get("performance_history", [])
+
+        txt = f"사이클: #{cycle}  |  개선: {improvements}건  |  롤백: {rollbacks}건  |  마지막: {last}\n"
+        txt += f"시스템 점수: {score:.1f}/100\n\n"
+
+        if perf:
+            recent = perf[-5:]
+            txt += "성능 추이:\n"
+            for p in recent:
+                s = p.get("score", 0)
+                bar_len = int(min(s, 100) / 5)
+                bar = "█" * bar_len + "░" * (20 - bar_len)
+                txt += f"  #{p.get('cycle', 0):3d}  {bar}  {s:5.1f}\n"
+            txt += "\n"
+
+        weaknesses = diag.get("weaknesses", [])
+        if weaknesses:
+            txt += f"발견된 약점 ({len(weaknesses)}개):\n"
+            for w in weaknesses[:5]:
+                sev_icon = {"critical": "!!", "high": "! ", "medium": "- ", "low": "  "}.get(
+                    w.get("severity", ""), "  ")
+                txt += f"  {sev_icon}{w.get('detail', '')}\n"
+            txt += "\n"
+
+        active_roadmap = sorted(roadmap, key=lambda m: m.get("priority", 0), reverse=True)
+        if active_roadmap:
+            txt += "자율 개발 로드맵:\n"
+            for m in active_roadmap[:6]:
+                status_icon = {"pending": "◻", "cooldown": "⏳", "applied": "✓"}.get(
+                    m.get("status", ""), "◻")
+                pri = m.get("priority", 0)
+                txt += f"  {status_icon} [{pri:4.1f}] {m.get('name', '')}\n"
+            if len(active_roadmap) > 6:
+                txt += f"  ... 외 {len(active_roadmap) - 6}개\n"
+            txt += "\n"
+
+        if applied:
+            txt += f"최근 적용 ({len(applied)}건):\n"
+            for a in applied[-3:]:
+                txt += f"  #{a.get('cycle', 0)} {a.get('module_id', '')} — {a.get('reason', '')}\n"
+        return txt
+
+    def _auto_refresh(self):
+        if self._is_trading and self.auto_refresh_var.get():
+            self._refresh_balance()
+        if self._is_trading:
+            self._auto_refresh_id = self.root.after(30000, self._auto_refresh)
+
+    # ═══════════════════════════════════════════════
+    # 수동 매매
+    # ═══════════════════════════════════════════════
+
+    def _on_holdings_right_click(self, event):
+        """보유 종목 우클릭 → 강제 매도."""
+        item = self.holdings_tree.identify_row(event.y)
+        if not item:
+            return
+        self.holdings_tree.selection_set(item)
+        values = self.holdings_tree.item(item, "values")
+        if not values:
+            return
+        menu = tk.Menu(self.root, tearoff=0,
+                       bg=self.c["surface"], fg=self.c["fg"],
+                       activebackground=self.c["red"], activeforeground="#fff",
+                       font=(self.FONT, 10))
+        stock_name = values[0]
+        menu.add_command(label=f"  {stock_name} 전량 매도  ",
+                         command=lambda: self._sell_holding_by_name(stock_name))
+        menu.post(event.x_root, event.y_root)
+
+    def _on_holdings_double_click(self, event):
+        """보유 종목 더블클릭 → 강제 매도 확인."""
+        item = self.holdings_tree.identify_row(event.y)
+        if not item:
+            return
+        values = self.holdings_tree.item(item, "values")
+        if not values:
+            return
+        self._sell_holding_by_name(values[0])
+
+    def _sell_holding_by_name(self, stock_name):
+        """종목명으로 보유 종목을 찾아서 매도한다 (백그라운드 처리)."""
+        if not messagebox.askyesno("매도 확인",
+                                    f"{stock_name}\n\n전량 시장가로 매도하시겠습니까?"):
+            return
+
+        def _do_find_and_sell():
+            try:
+                api = self._get_api()
+                balance = api.get_balance()
+                code = None
+                quantity = 0
+                for h in balance.get("holdings", []):
+                    if h.get("stock_name") == stock_name:
+                        code = h["stock_code"]
+                        quantity = h["quantity"]
+                        break
+
+                if not code:
+                    self.root.after(0, lambda: messagebox.showwarning(
+                        "매도 실패", f"'{stock_name}' 종목을 보유하고 있지 않습니다."))
+                    return
+
+                result = api.sell_market_order(code, quantity)
+                if result["success"]:
+                    msg = f"{stock_name} {quantity}주 매도 완료"
+                    self.root.after(0, lambda: (
+                        messagebox.showinfo("매도 완료", msg),
+                        self._refresh_balance(),
+                    ))
+                else:
+                    err = result.get("message", "알 수 없는 오류")
+                    self.root.after(0, lambda: messagebox.showerror("매도 실패", err))
+            except Exception as e:
+                err = str(e)
+                self.root.after(0, lambda: messagebox.showerror("매도 오류", err))
+
+        threading.Thread(target=_do_find_and_sell, daemon=True).start()
+
+    def _find_stock_code_by_name(self, name):
+        """최근 잔고에서 종목명으로 코드를 찾는다."""
+        try:
+            from api.kis_api import KISApi
+            api = KISApi(self.settings)
+            balance = api.get_balance()
+            for h in balance.get("holdings", []):
+                if h.get("stock_name") == name:
+                    return h["stock_code"]
+        except Exception:
+            pass
+        return None
+
+    def _manual_buy(self):
+        """수동 매수 실행."""
+        code = self.manual_buy_code.get().strip()
+        amount_str = self.manual_buy_amount.get().strip()
+
+        if not code:
+            messagebox.showwarning("매수", "종목코드를 입력하세요.")
+            return
+        if len(code) != 6 or not code.isdigit():
+            messagebox.showwarning("매수", "종목코드는 6자리 숫자입니다.\n예: 005930 (삼성전자)")
+            return
+
+        amount = int(amount_str) if amount_str.isdigit() else 0
+
+        if not messagebox.askyesno("매수 확인",
+                                    f"종목코드: {code}\n"
+                                    f"매수금액: {f'{amount:,}원' if amount > 0 else '최대매수금액'}\n\n"
+                                    f"시장가로 매수하시겠습니까?"):
+            return
+
+        def _do_buy():
+            try:
+                from api.kis_api import KISApi
+                api = KISApi(self.settings)
+
+                price_data = api.get_current_price(code)
+                if not price_data or not price_data.get("price"):
+                    self.root.after(0, lambda: messagebox.showerror(
+                        "매수 실패", f"{code} 시세 조회 실패\n종목코드를 확인하세요."))
+                    return
+
+                price = price_data["price"]
+                stock_name = price_data.get("stock_name", code)
+                buy_amount = amount if amount > 0 else self.settings.max_buy_amount
+                quantity = buy_amount // price
+                if quantity <= 0:
+                    self.root.after(0, lambda: messagebox.showerror(
+                        "매수 실패", f"매수 수량 0\n가격: {price:,}원, 금액: {buy_amount:,}원"))
+                    return
+
+                result = api.buy_market_order(code, quantity)
+                if result["success"]:
+                    msg = f"{stock_name} {quantity}주 매수 완료\n({price:,}원 × {quantity}주 = {price*quantity:,}원)"
+                    self.root.after(0, lambda: (
+                        messagebox.showinfo("매수 완료", msg),
+                        self.manual_buy_code.delete(0, tk.END),
+                        self.manual_buy_amount.delete(0, tk.END),
+                        self._refresh_balance(),
+                    ))
+                else:
+                    err = result.get("message", "알 수 없는 오류")
+                    self.root.after(0, lambda: messagebox.showerror("매수 실패", err))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("매수 오류", str(e)))
+
+        threading.Thread(target=_do_buy, daemon=True).start()
+
+    def _manual_sell(self):
+        """수동 매도 실행 (전량 시장가)."""
+        code = self.manual_sell_code.get().strip()
+
+        if not code:
+            messagebox.showwarning("매도", "종목코드를 입력하세요.")
+            return
+        if len(code) != 6 or not code.isdigit():
+            messagebox.showwarning("매도", "종목코드는 6자리 숫자입니다.")
+            return
+
+        if not messagebox.askyesno("매도 확인",
+                                    f"종목코드: {code}\n\n"
+                                    f"전량 시장가로 매도하시겠습니까?"):
+            return
+
+        def _do_sell():
+            try:
+                from api.kis_api import KISApi
+                api = KISApi(self.settings)
+                balance = api.get_balance()
+
+                holding = None
+                for h in balance.get("holdings", []):
+                    if h["stock_code"] == code:
+                        holding = h
+                        break
+
+                if not holding:
+                    self.root.after(0, lambda: messagebox.showerror(
+                        "매도 실패", f"{code} 종목을 보유하고 있지 않습니다."))
+                    return
+
+                quantity = holding["quantity"]
+                stock_name = holding.get("stock_name", code)
+
+                result = api.sell_market_order(code, quantity)
+                if result["success"]:
+                    msg = f"{stock_name} {quantity}주 매도 완료"
+                    self.root.after(0, lambda: (
+                        messagebox.showinfo("매도 완료", msg),
+                        self.manual_sell_code.delete(0, tk.END),
+                        self._refresh_balance(),
+                    ))
+                else:
+                    err = result.get("message", "알 수 없는 오류")
+                    self.root.after(0, lambda: messagebox.showerror("매도 실패", err))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("매도 오류", str(e)))
+
+        threading.Thread(target=_do_sell, daemon=True).start()
+
+    # ═══════════════════════════════════════════════
+    # 자동매매 액션
+    # ═══════════════════════════════════════════════
+
+    def _resume_trading(self):
+        if not self._state_mgr:
+            return
+        info = self._state_mgr.get_resume_info()
+        self.strategy_var.set(info["strategy"])
+        self.interval_var.set(str(info["interval"]))
+        market = info.get("market", "KR")
+        if market in self.MARKETS:
+            self.market_var.set(self.MARKETS[market])
+        stocks = info.get("target_stocks", [])
+        if stocks:
+            self.stocks_entry.delete(0, tk.END)
+            self.stocks_entry.insert(0, ",".join(stocks))
+        self.notebook.select(1)
+        self._log(f"이전 세션 복원: {info['strategy']} ({market}) | 누적 수익: {info['total_profit']:+,.0f}원")
+        self._start_trading()
+
+    def _start_trading(self):
+        errors = self.settings.validate()
+        if errors:
+            messagebox.showwarning("오류", "먼저 설정에서 API 키를 입력하세요.")
+            return
+        self._is_trading = True
+        self.start_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.NORMAL)
+        self.status_label.config(text="매매중", fg=self.c["green"])
+        self.status_dot.config(fg=self.c["green"])
+        self._trading_thread = threading.Thread(target=self._trading_loop, daemon=True)
+        self._trading_thread.start()
+        self._auto_refresh_id = self.root.after(30000, self._auto_refresh)
+
+    def _stop_trading(self):
+        self._is_trading = False
+        if self._trader:
+            self._trader.stop()
+        if self._auto_refresh_id:
+            self.root.after_cancel(self._auto_refresh_id)
+            self._auto_refresh_id = None
+        self.start_btn.config(state=tk.NORMAL)
+        self.stop_btn.config(state=tk.DISABLED)
+        self.status_label.config(text="대기중", fg=self.c["dim"])
+        self.status_dot.config(fg=self.c["dim2"])
+        self._log("자동매매 중지됨")
+        self._refresh_balance()
+
+    def _trading_loop(self):
+        import logging
+
+        class GUILogHandler(logging.Handler):
+            def __init__(self, callback):
+                super().__init__()
+                self.callback = callback
+            def emit(self, record):
+                self.callback(self.format(record))
+
+        handler = GUILogHandler(lambda msg: self.root.after(0, self._log, msg))
+        handler.setFormatter(logging.Formatter(
+            "[%(asctime)s] %(message)s", datefmt="%H:%M:%S"))
+        logging.getLogger("oshms").addHandler(handler)
+
+        try:
+            from strategy import (ExpertStrategy, ScalpingStrategy,
+                                  MomentumStrategy, CombinedStrategy)
+            from trading.trader import AutoTrader
+            from trading.state_manager import StateManager
+
+            # v4.7: 매매 시작 전 .env 최신 값을 제자리 반영
+            self.settings.reload_from_env()
+            self._reset_api()
+            api = self._get_api()
+            strategy_map = {
+                "expert": lambda: ExpertStrategy(api=api, settings=self.settings),
+                "scalping": ScalpingStrategy,
+                "momentum": MomentumStrategy,
+                "combined": CombinedStrategy,
+            }
+            name = self.strategy_var.get()
+            strategy = strategy_map.get(name, strategy_map["expert"])()
+            self._trader = AutoTrader(api, self.settings, strategy)
+
+            stocks_text = self.stocks_entry.get().strip()
+            target = None
+            if stocks_text and stocks_text != "자동선정":
+                target = [s.strip() for s in stocks_text.split(",")]
+            interval = int(self.interval_var.get())
+            market = self._get_market_code()
+
+            if not self._state_mgr:
+                self._state_mgr = StateManager()
+            self._state_mgr.start_session(name, target or [], interval, market)
+            gen = self._state_mgr.state.evolution_generation
+            self.root.after(0, lambda: self.evo_label.config(
+                text=f"진화 #{gen}"))
+            self._trader.start(target_stocks=target, interval=interval)
+        except Exception as e:
+            err_msg = str(e)
+            self.root.after(0, lambda: self._log(f"오류: {err_msg}"))
+            self.root.after(0, self._stop_trading)
+        finally:
+            logging.getLogger("oshms").removeHandler(handler)
+
+    def _log(self, message: str):
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.see(tk.END)
+        lines = int(self.log_text.index("end-1c").split(".")[0])
+        if lines > 500:
+            self.log_text.delete("1.0", f"{lines - 400}.0")
+
+    # ═══════════════════════════════════════════════
+    # 종목분석 액션
+    # ═══════════════════════════════════════════════
+
+    def _run_analysis(self):
+        code = self.analyze_code.get().strip()
+        name = self.analyze_name.get().strip() or code
+        market = self.analyze_market_var.get()
+
+        if not code:
+            messagebox.showwarning("입력 오류", "종목코드를 입력하세요.")
+            return
+        errors = self.settings.validate()
+        if errors:
+            messagebox.showwarning("오류", "먼저 설정에서 API 키를 입력하세요.")
+            return
+
+        self._analysis_cancel.clear()
+        self.analyze_btn.config(state=tk.DISABLED)
+        self.analyze_stop_btn.config(state=tk.NORMAL)
+        self.analysis_text.delete("1.0", tk.END)
+        self.analysis_text.insert(tk.END,
+                                  f"[{market}] {name}({code}) AI 분석 중...\n")
+
+        cancel = self._analysis_cancel
+
+        def _on_done():
+            self.analyze_btn.config(state=tk.NORMAL)
+            self.analyze_stop_btn.config(state=tk.DISABLED)
+
+        def _analyze():
+            try:
+                from strategy.expert import ExpertStrategy
+                from strategy.market_context import MarketContextAnalyzer
+
+                if cancel.is_set():
+                    return
+                api = self._get_api()
+                strategy = ExpertStrategy(api=api, settings=self.settings)
+                try:
+                    ctx = MarketContextAnalyzer(api).analyze()
+                    strategy.set_market_context(ctx)
+                except Exception:
+                    pass
+                if cancel.is_set():
+                    return
+
+                if market == "KR":
+                    current_price = api.get_current_price(code)
+                    candles = api.get_minute_chart(code, period="3")
+                    if len(candles) < 20:
+                        candles = api.get_daily_chart(code, count=60)
+                else:
+                    price_data = api.get_overseas_price(market, code)
+                    if not price_data:
+                        self.root.after(0, lambda: self.analysis_text.insert(
+                            tk.END, "해외 시세 조회 실패\n"))
+                        return
+                    current_price = {
+                        "price": int(price_data["price"]) if price_data["price"] > 100 else price_data["price"],
+                        "stock_name": name, "stock_code": code,
+                        "open": price_data["open"], "high": price_data["high"],
+                        "low": price_data["low"], "volume": price_data["volume"],
+                        "change_rate": price_data["change_rate"],
+                    }
+                    candles = api.get_overseas_daily_chart(market, code, count=60)
+                if cancel.is_set():
+                    return
+                if not current_price:
+                    self.root.after(0, lambda: self.analysis_text.insert(
+                        tk.END, "시세 조회 실패\n"))
+                    return
+                current_price["stock_name"] = name
+                if not candles:
+                    self.root.after(0, lambda: self.analysis_text.insert(
+                        tk.END, "차트 데이터 조회 실패\n"))
+                    return
+
+                analysis = strategy.full_analysis(code, name, candles, current_price)
+                if cancel.is_set():
+                    return
+                result = f"[시장: {market}]\n" + analysis.summary()
+
+                # ── 목표가 & 상승여력 분석 ──
+                if market == "KR":
+                    upside_info = strategy.estimate_upside(code, candles, current_price)
+                    target_p = upside_info.get("target_price", 0)
+                    upside_pct = upside_info.get("upside_pct", 0)
+                    trend_alive = upside_info.get("trend_alive", False)
+                    momentum = upside_info.get("momentum_score", 0)
+                    should_hold = upside_info.get("should_hold", False)
+                    up_reason = upside_info.get("reason", "")
+
+                    result += "\n\n══ 목표가 & 상승여력 분석 ══"
+                    result += f"\n  목표가: {target_p:,}원" if target_p else "\n  목표가: 산출 불가"
+                    price_now = current_price.get("price", 0)
+                    if price_now and target_p:
+                        result += f" (현재가 대비 {upside_pct:+.1f}%)"
+                    result += f"\n  추세 상태: {'살아있음' if trend_alive else '약화/소진'}"
+                    result += f"\n  모멘텀 점수: {momentum:+.3f}"
+                    result += f"\n  종합 판단: {'보유/매수 유지' if should_hold else '매도 고려'}"
+                    if up_reason:
+                        result += f"\n  근거: {up_reason}"
+
+                t = analysis.technical
+                if t:
+                    result += "\n\n══ 기술적 지표 ══"
+                    result += f"\n  SMA(5/20/60): {t.sma_5:,.0f} / {t.sma_20:,.0f} / {t.sma_60:,.0f}"
+                    result += f"\n  RSI: {t.rsi:.1f}  |  MACD: {t.macd_line:,.0f} (Signal: {t.macd_signal:,.0f})"
+                    result += f"\n  Stochastic: K={t.stoch_k:.1f}  D={t.stoch_d:.1f}"
+                    result += f"\n  BB: {t.bb_lower:,.0f} ~ {t.bb_middle:,.0f} ~ {t.bb_upper:,.0f} (폭={t.bb_width:.1f}%)"
+                    result += f"\n  VWAP: {t.vwap:,.0f}  |  ATR: {t.atr:,.0f} ({t.atr_pct:.2f}%)"
+                    result += f"\n  일목균형: {t.ichimoku_signal}  |  거래량비: x{t.volume_ratio:.1f}"
+                    if t.support_levels:
+                        result += f"\n  지지선: {', '.join(f'{s:,.0f}' for s in t.support_levels)}"
+                    if t.resistance_levels:
+                        result += f"\n  저항선: {', '.join(f'{r:,.0f}' for r in t.resistance_levels)}"
+
+                if analysis.sentiment and analysis.sentiment.key_headlines:
+                    result += "\n\n══ 최신 뉴스 ══"
+                    for h in analysis.sentiment.key_headlines:
+                        result += f"\n  {h}"
+
+                if cancel.is_set():
+                    return
+
+                try:
+                    from strategy.ai_analyst import AIAnalyst
+                    ai = AIAnalyst(api_key=self.settings.openai_api_key)
+                    ai_data = AIAnalyst.extract_analysis_data(analysis)
+                    ai_result = ai.analyze(ai_data)
+                    result += "\n\n" + ai_result.format_report()
+                except Exception as ai_err:
+                    result += f"\n\nAI 분석: {ai_err}"
+
+                if cancel.is_set():
+                    return
+                self.root.after(0, lambda: (
+                    self.analysis_text.delete("1.0", tk.END),
+                    self.analysis_text.insert(tk.END, result)))
+            except Exception as e:
+                err_msg = str(e)
+                if not cancel.is_set():
+                    self.root.after(0, lambda: self.analysis_text.insert(
+                        tk.END, f"\n오류: {err_msg}\n"))
+            finally:
+                self.root.after(0, _on_done)
+
+        self._analysis_thread = threading.Thread(target=_analyze, daemon=True)
+        self._analysis_thread.start()
+
+    def _stop_analysis(self):
+        self._analysis_cancel.set()
+        self.analyze_btn.config(state=tk.NORMAL)
+        self.analyze_stop_btn.config(state=tk.DISABLED)
+        self.analysis_text.insert(tk.END, "\n── 분석이 중지되었습니다 ──\n")
