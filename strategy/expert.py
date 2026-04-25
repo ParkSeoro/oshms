@@ -852,8 +852,8 @@ class ExpertStrategy(BaseStrategy):
             if "09:00" <= now_str <= "09:15":
                 buy_adj += 0.08
 
-            # 6. 적자 기업 매수 금지
-            if result.per < 0:
+            # 6. 적자 기업 매수 금지 (단, PER=0은 데이터 없음이므로 허용)
+            if result.per < 0 and result.per != 0:
                 return "HOLD"
 
             # v4.4: 다중 확인 — 기술 지표 3개 중 2개 이상 양호해야 매수

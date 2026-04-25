@@ -39,13 +39,13 @@ class TestProfitAnalyzer(unittest.TestCase):
         analyzer = self._make_analyzer_with_trades(trades)
         summary = analyzer.get_summary()
 
-        self.assertEqual(summary["총거래횟수"], 4)
-        self.assertEqual(summary["매수횟수"], 2)
-        self.assertEqual(summary["매도횟수"], 2)
-        self.assertEqual(summary["총실현손익"], 5000)  # 20000 - 15000
-        self.assertEqual(summary["승리"], 1)
-        self.assertEqual(summary["패배"], 1)
-        self.assertAlmostEqual(summary["승률"], 50.0)
+        self.assertEqual(summary["total_trades"], 4)
+        self.assertEqual(summary["buy_count"], 2)
+        self.assertEqual(summary["sell_count"], 2)
+        self.assertEqual(summary["total_profit"], 5000)  # 20000 - 15000
+        self.assertEqual(summary["wins"], 1)
+        self.assertEqual(summary["losses"], 1)
+        self.assertAlmostEqual(summary["win_rate"], 50.0)
 
     def test_daily_summary(self):
         trades = [
@@ -62,10 +62,10 @@ class TestProfitAnalyzer(unittest.TestCase):
         daily = analyzer.get_daily_summary()
 
         self.assertEqual(len(daily), 2)
-        self.assertEqual(daily[0]["날짜"], "2025-01-01")
-        self.assertEqual(daily[0]["실현손익"], 20000)
-        self.assertEqual(daily[1]["날짜"], "2025-01-02")
-        self.assertEqual(daily[1]["실현손익"], -10000)
+        self.assertEqual(daily[0]["date"], "2025-01-01")
+        self.assertEqual(daily[0]["profit"], 20000)
+        self.assertEqual(daily[1]["date"], "2025-01-02")
+        self.assertEqual(daily[1]["profit"], -10000)
 
     def test_stock_summary(self):
         trades = [
@@ -82,8 +82,7 @@ class TestProfitAnalyzer(unittest.TestCase):
         stock = analyzer.get_stock_summary()
 
         self.assertEqual(len(stock), 2)
-        # 수익 순 정렬
-        self.assertEqual(stock[0]["종목코드"], "005930")
+        self.assertEqual(stock[0]["stock_code"], "005930")
 
     def test_hourly_analysis(self):
         trades = [
@@ -129,9 +128,9 @@ class TestProfitAnalyzer(unittest.TestCase):
         analyzer = self._make_analyzer_with_trades(trades)
         summary = analyzer.get_summary()
 
-        self.assertEqual(summary["평균수익(승)"], 30000)
-        self.assertEqual(summary["평균손실(패)"], -15000)
-        self.assertAlmostEqual(summary["손익비"], 2.0)
+        self.assertEqual(summary["avg_win"], 30000)
+        self.assertEqual(summary["avg_loss"], -15000)
+        self.assertAlmostEqual(summary["profit_factor"], 2.0)
 
 
 if __name__ == "__main__":

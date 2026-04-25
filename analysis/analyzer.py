@@ -165,15 +165,15 @@ class ProfitAnalyzer:
             "=" * 60,
             "",
             "▣ 전체 요약",
-            f"  기간: {summary['기간']}",
-            f"  총 거래: {summary['총거래횟수']}건 (매수 {summary['매수횟수']}건, 매도 {summary['매도횟수']}건)",
-            f"  총 실현손익: {summary['총실현손익']:>12,}원 ({summary['총수익률']:+.2f}%)",
-            f"  승률: {summary['승률']:.1f}% ({summary['승리']}승 {summary['패배']}패 {summary['무승부']}무)",
-            f"  손익비: {summary['손익비']:.2f}",
-            f"  평균 수익(승): {summary['평균수익(승)']:>10,.0f}원",
-            f"  평균 손실(패): {summary['평균손실(패)']:>10,.0f}원",
-            f"  최대 수익 거래: {summary['최대수익거래']:>10,}원",
-            f"  최대 손실 거래: {summary['최대손실거래']:>10,}원",
+            f"  기간: {summary['period']}",
+            f"  총 거래: {summary['total_trades']}건 (매수 {summary['buy_count']}건, 매도 {summary['sell_count']}건)",
+            f"  총 실현손익: {summary['total_profit']:>12,}원 ({summary['total_profit_rate']:+.2f}%)",
+            f"  승률: {summary['win_rate']:.1f}% ({summary['wins']}승 {summary['losses']}패 {summary['evens']}무)",
+            f"  손익비: {summary['profit_factor']:.2f}",
+            f"  평균 수익(승): {summary['avg_win']:>10,.0f}원",
+            f"  평균 손실(패): {summary['avg_loss']:>10,.0f}원",
+            f"  최대 수익 거래: {summary['best_trade']:>10,}원",
+            f"  최대 손실 거래: {summary['worst_trade']:>10,}원",
             "",
         ]
 
@@ -185,8 +185,8 @@ class ProfitAnalyzer:
             lines.append("  " + "-" * 44)
             for d in daily:
                 lines.append(
-                    f"  {d['날짜']:<12} {d['매수']:>4} {d['매도']:>4} "
-                    f"{d['실현손익']:>11,}원 {d['수익률']:>+7.2f}%"
+                    f"  {d['date']:<12} {d['buy_count']:>4} {d['sell_count']:>4} "
+                    f"{d['profit']:>11,}원 {d['profit_rate']:>+7.2f}%"
                 )
             lines.append("")
 
@@ -198,8 +198,8 @@ class ProfitAnalyzer:
             lines.append("  " + "-" * 44)
             for s in stock:
                 lines.append(
-                    f"  {s['종목명']:<12} {s['매수횟수']:>4} {s['매도횟수']:>4} "
-                    f"{s['실현손익']:>11,}원 {s['승률']:>6.1f}%"
+                    f"  {s['stock_name']:<12} {s['buy_count']:>4} {s['sell_count']:>4} "
+                    f"{s['profit']:>11,}원 {s['win_rate']:>6.1f}%"
                 )
             lines.append("")
 
